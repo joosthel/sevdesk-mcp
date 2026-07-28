@@ -431,14 +431,21 @@ export function parseSevdeskDate(value: unknown): Date | null {
   const de = /^(\d{2})\.(\d{2})\.(\d{4})$/.exec(s);
   if (de) return new Date(Number(de[3]), Number(de[2]) - 1, Number(de[1]));
   if (/^\d{10}$/.test(s)) return new Date(Number(s) * 1000);
+  // Bookkeeping dates are calendar dates. sevDesk sends them as local
+  // midnight with an offset ("2026-06-30T00:00:00+02:00") — take the date
+  // part literally instead of letting timezone conversion shift the day.
+  const iso = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
+  if (iso) return new Date(Number(iso[1]), Number(iso[2]) - 1, Number(iso[3]));
   const d = new Date(s);
   return Number.isNaN(d.getTime()) ? null : d;
 }
 
 export function ymd(date: Date): string {
-  return date.toISOString().slice(0, 10);
+  const m = String(date.getMonth() + 1).padStart(2, "0");
+  const d = String(date.getDate()).padStart(2, "0");
+  return `${date.getFullYear()}-${m}-${d}`;
 }
 
 export function monthKey(date: Date): string {
-  return date.toISOString().slice(0, 7);
+  return ymd(date).slice(0, 7);
 }

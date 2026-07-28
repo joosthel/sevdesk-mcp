@@ -4,12 +4,14 @@ import {
   LEGACY_TAX_TYPE_RULES,
   TAX_RULES,
   looksForeign,
+  monthKey,
   num,
   parseSevdeskDate,
   readTaxTreatment,
   round2,
   supplierKey,
   voucherSide,
+  ymd,
 } from "../src/lib/vat.js";
 import { parseReceiptFilename } from "../src/tools/audit.js";
 
@@ -165,6 +167,14 @@ describe("number and date parsing", () => {
     expect(parseSevdeskDate("26.06.2026")?.getFullYear()).toBe(2026);
     expect(parseSevdeskDate("2026-06-26")?.getMonth()).toBe(5);
     expect(parseSevdeskDate("")).toBeNull();
+  });
+
+  it("keeps the calendar date of timezone-carrying timestamps", () => {
+    // sevDesk stores voucher dates as local midnight ("2026-06-30T00:00:00+02:00").
+    // Formatting through UTC would shift them to the previous day.
+    const d = parseSevdeskDate("2026-06-30T00:00:00+02:00");
+    expect(d && ymd(d)).toBe("2026-06-30");
+    expect(d && monthKey(d)).toBe("2026-06");
   });
 });
 
