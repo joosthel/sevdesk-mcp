@@ -3,11 +3,14 @@ import { basename, isAbsolute, resolve, sep } from "node:path";
 
 import { ReadOnlyError } from "../config.js";
 import {
+  TAX_RULES,
   VOUCHER_STATUS,
+  type TaxRule,
   num,
   parseSevdeskDate,
   readTaxTreatment,
   round2,
+  voucherSide,
   ymd,
 } from "../lib/vat.js";
 import {
@@ -474,6 +477,171 @@ const createVoucher: ToolDef = {
   },
 };
 
+/* ------------------------------------------------------------------ */
+
+const RATE_WORD: Record<string, number> = { ZERO: 0, SEVEN: 7, NINETEEN: 19 };
+
+const receiptGuidance: ToolDef = {
+  name: "sevdesk_receipt_guidance",
+  title: "Booking-account guidance",
+  description:
+    "sevDesk's own booking guidance: which DATEV/SKR accounts exist for expenses or revenue and " +
+    "which tax rules and rates each of them allows — the table sevDesk validates against when a " +
+    "voucher is booked. Filter by text, account number or tax rule; output is capped, never the " +
+    "full account dump. Read-only.",
+  mutating: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      side: str("Which side to fetch guidance for (default expense).", {
+        enum: ["expense", "revenue"],
+      }),
+      query: str("Case-insensitive substring over account number, name and description."),
+      accountNumber: str("Exact SKR account number, e.g. '6837'."),
+      taxRuleId: str("Only accounts that allow this tax rule id, e.g. '12'."),
+      limit: int("Maximum accounts to return (default 20)."),
+    },
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const side = optString(args, "side") ?? "expense";
+    const query = optString(args, "query")?.toLowerCase();
+    const accountNumber = optString(args, "accountNumber");
+    const taxRuleId = optString(args, "taxRuleId");
+    const limit = optNumber(args, "limit") ?? 20;
+
+    const { data } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: side === "revenue" ? "/ReceiptGuidance/forRevenue" : "/ReceiptGuidance/forExpense",
+    });
+
+    const accounts = (data?.objects ?? [])
+      .map((o) => ({
+        accountDatevId: String(o.accountDatevId ?? ""),
+        accountNumber: String(o.accountNumber ?? ""),
+        accountName: String(o.accountName ?? ""),
+        description: String(o.description ?? ""),
+        receiptTypes: (o.allowedReceiptTypes as string[] | undefined) ?? [],
+        allowedTaxRules: ((o.allowedTaxRules as Row[] | undefined) ?? []).map((r) => ({
+          id: String(r.id ?? ""),
+          name: String(r.name ?? ""),
+          rates: ((r.taxRates as string[] | undefined) ?? []).map((w) => RATE_WORD[w] ?? w),
+        })),
+      }))
+      .filter(
+        (a) =>
+          (!accountNumber || a.accountNumber === accountNumber) &&
+          (!taxRuleId || a.allowedTaxRules.some((r) => r.id === taxRuleId)) &&
+          (!query ||
+            `${a.accountNumber} ${a.accountName} ${a.description}`.toLowerCase().includes(query)),
+      );
+
+    return {
+      side,
+      totalMatching: accounts.length,
+      returned: Math.min(accounts.length, limit),
+      accounts: accounts.slice(0, limit),
+    };
+  },
+};
+
+const setTaxRule: ToolDef = {
+  name: "sevdesk_set_tax_rule",
+  title: "Change a voucher's tax rule",
+  description:
+    "Rebook a voucher onto a different VAT rule (e.g. from 'Vorsteuerabziehbare Aufwendungen' " +
+    "onto Reverse Charge §13b, taxRule 12) with guardrails: refuses enshrined vouchers and rules " +
+    "from the wrong side of the books, verifies the result afterwards, and previews the request " +
+    "with dryRun. The voucher's positions keep their rates.",
+  mutating: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      voucherId: str("Numeric voucher id."),
+      taxRuleId: str("Target tax rule id.", {
+        enum: Object.entries(TAX_RULES)
+          .filter(([, r]) => (r as TaxRule).usableInVouchers)
+          .map(([id]) => id),
+      }),
+      dryRun: bool("Preview the request without sending it."),
+    },
+    required: ["voucherId", "taxRuleId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const id = requireString(args, "voucherId");
+    const target = requireString(args, "taxRuleId");
+    const rule = (TAX_RULES as Record<string, TaxRule>)[target];
+    if (!rule || !rule.usableInVouchers) {
+      const usable = Object.entries(TAX_RULES)
+        .filter(([, r]) => (r as TaxRule).usableInVouchers)
+        .map(([rid]) => rid)
+        .join(", ");
+      throw new Error(`taxRule '${target}' cannot be used on vouchers. Usable rules: ${usable}.`);
+    }
+
+    const { data } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/Voucher/${encodeURIComponent(id)}`,
+    });
+    const v = data?.objects?.[0];
+    if (!v) throw new Error(`No voucher with id ${id}.`);
+    if (v.enshrined) {
+      throw new Error(
+        `Voucher ${id} is enshrined (festgeschrieben) — sevDesk forbids changing it.`,
+      );
+    }
+
+    const before = readTaxTreatment(v);
+    const side = voucherSide(v) ?? rule.side;
+    if (side !== rule.side) {
+      throw new Error(
+        `taxRule ${target} ("${rule.label}") is a ${rule.side} rule but voucher ${id} is ` +
+          `${side === "expense" ? "an expense" : "a revenue"} document.`,
+      );
+    }
+
+    if (before.ruleId === target) {
+      return {
+        voucherId: id,
+        changed: false,
+        note: `Voucher already uses taxRule ${target} ("${rule.label}").`,
+      };
+    }
+
+    const body = { taxRule: { id: target, objectName: "TaxRule" } };
+    if ((optBool(args, "dryRun") ?? false) || ctx.config.dryRun) {
+      return {
+        dryRun: true,
+        wouldSend: { method: "PUT", path: `/Voucher/${id}`, body },
+        before: { ruleId: before.ruleId, label: before.label },
+        target: { ruleId: target, label: rule.label },
+      };
+    }
+
+    await ctx.client.request({
+      method: "PUT",
+      path: `/Voucher/${encodeURIComponent(id)}`,
+      body,
+      mutating: true,
+    });
+
+    // Trust nothing: read the voucher back and confirm the rule actually changed.
+    const check = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/Voucher/${encodeURIComponent(id)}`,
+    });
+    const after = readTaxTreatment(check.data?.objects?.[0] ?? {});
+    return {
+      voucherId: id,
+      changed: true,
+      before: { ruleId: before.ruleId, label: before.label },
+      after: { ruleId: after.ruleId, label: after.label },
+      verified: after.ruleId === target,
+    };
+  },
+};
+
 export const resourceTools: ToolDef[] = [
   ping,
   listVouchers,
@@ -483,4 +651,6 @@ export const resourceTools: ToolDef[] = [
   listTransactions,
   uploadVoucherFile,
   createVoucher,
+  receiptGuidance,
+  setTaxRule,
 ];

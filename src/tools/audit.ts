@@ -4,13 +4,15 @@ import { basename, extname, isAbsolute, resolve, sep } from "node:path";
 import {
   TAX_RULES,
   VOUCHER_STATUS,
-  looksForeign,
+  type VoucherSide,
+  classifyForeign,
   monthKey,
   num,
   parseSevdeskDate,
   readTaxTreatment,
   round2,
   supplierKey,
+  voucherSide,
   ymd,
 } from "../lib/vat.js";
 import { bool, int, optBool, optNumber, optString, str, type ToolContext, type ToolDef } from "../lib/tool.js";
@@ -92,6 +94,85 @@ async function fetchPositions(
   return { positions, warnings };
 }
 
+/**
+ * Contact country per normalised supplier name. Authoritative where present;
+ * failure degrades to the name heuristic with a warning, never to an error.
+ */
+async function fetchSupplierCountries(
+  ctx: ToolContext,
+): Promise<{ countries: Map<string, string>; warnings: string[] }> {
+  const countries = new Map<string, string>();
+  try {
+    const contacts = await ctx.client.getAll<Row>(
+      "/Contact",
+      { depth: 1, embed: "addresses,addresses.country" },
+      { maxItems: 2000 },
+    );
+    for (const c of contacts) {
+      const key = supplierKey(c.name);
+      if (!key || countries.has(key)) continue;
+      const addresses = Array.isArray(c.addresses) ? (c.addresses as Row[]) : [];
+      const code = addresses
+        .map((a) => String((a.country as Row | undefined)?.code ?? "").toLowerCase())
+        .find(Boolean);
+      if (code) countries.set(key, code);
+    }
+    return { countries, warnings: [] };
+  } catch (err) {
+    return {
+      countries,
+      warnings: [
+        `Contacts could not be fetched (${err instanceof Error ? err.message : String(err)}); ` +
+          `country checks fell back to the supplier-name heuristic.`,
+      ],
+    };
+  }
+}
+
+interface GuidanceAccount {
+  number: string;
+  name: string;
+  allowed: Set<string>;
+}
+
+/** ReceiptGuidance per accountDatev id — which tax rules each booking account allows. */
+async function fetchGuidance(
+  ctx: ToolContext,
+  sides: ReadonlySet<VoucherSide>,
+): Promise<{ byAccountId: Map<string, GuidanceAccount> | null; warnings: string[] }> {
+  const byAccountId = new Map<string, GuidanceAccount>();
+  try {
+    const paths: string[] = [];
+    if (sides.has("expense")) paths.push("/ReceiptGuidance/forExpense");
+    if (sides.has("revenue")) paths.push("/ReceiptGuidance/forRevenue");
+    for (const path of paths) {
+      const { data } = await ctx.client.request<{ objects?: Row[] }>({ method: "GET", path });
+      for (const o of data?.objects ?? []) {
+        const id = String(o.accountDatevId ?? "");
+        if (!id) continue;
+        const entry = byAccountId.get(id) ?? {
+          number: String(o.accountNumber ?? ""),
+          name: String(o.accountName ?? ""),
+          allowed: new Set<string>(),
+        };
+        for (const r of (o.allowedTaxRules as Row[] | undefined) ?? []) {
+          entry.allowed.add(String(r.id ?? ""));
+        }
+        byAccountId.set(id, entry);
+      }
+    }
+    return { byAccountId, warnings: [] };
+  } catch (err) {
+    return {
+      byAccountId: null,
+      warnings: [
+        `ReceiptGuidance could not be fetched (${err instanceof Error ? err.message : String(err)}); ` +
+          `booking-account/tax-rule checks were skipped.`,
+      ],
+    };
+  }
+}
+
 function voucherLabel(v: Row): string {
   const date = parseSevdeskDate(v.voucherDate);
   return [
@@ -145,6 +226,15 @@ const auditVat: ToolDef = {
     const { positions, warnings } = withPositions
       ? await fetchPositions(ctx, vouchers)
       : { positions: new Map<string, Row[]>(), warnings: [] };
+
+    const { countries, warnings: contactWarnings } = await fetchSupplierCountries(ctx);
+    warnings.push(...contactWarnings);
+
+    const sides = new Set<VoucherSide>(vouchers.map((v) => voucherSide(v) ?? "expense"));
+    const guidance = withPositions
+      ? await fetchGuidance(ctx, sides)
+      : { byAccountId: null, warnings: [] };
+    warnings.push(...guidance.warnings);
 
     const findings: Finding[] = [];
     const bySupplier = new Map<string, { rules: Set<string>; rates: Set<number>; names: Set<string> }>();
@@ -217,17 +307,25 @@ const auditVat: ToolDef = {
       const effectiveRule = tax.ruleId ?? tax.equivalentRuleId;
       const side = tax.side ?? "expense";
       if (allZero && !tax.reverseCharge && !tax.sideMismatch && !tax.unknown) {
-        const foreign = looksForeign(name);
+        const cls = classifyForeign(name, countries);
         const bookedAs = `"${tax.label}" (${tax.ruleId ? `taxRule ${tax.ruleId}` : `taxType ${tax.legacyType}`})`;
         if (side === "expense" && (effectiveRule === "9" || effectiveRule === "10")) {
+          const hint =
+            cls.verdict === "foreign"
+              ? cls.source === "country"
+                ? `, and the supplier's contact is registered in "${cls.country}".`
+                : `, and the supplier name looks non-German.`
+              : cls.verdict === "domestic"
+                ? `, but the supplier's contact is registered in Germany — a §19 (Kleinunternehmer) ` +
+                  `supplier would make this booking correct.`
+                : `.`;
           findings.push({
-            severity: foreign ? "high" : "medium",
+            severity:
+              cls.verdict === "foreign" ? "high" : cls.verdict === "domestic" ? "low" : "medium",
             code: "zero_rate_booked_as_domestic",
             voucherId: id,
             voucher: label,
-            detail:
-              `Booked as ${bookedAs} but every position carries 0 % VAT` +
-              (foreign ? `, and the supplier name looks non-German.` : `.`),
+            detail: `Booked as ${bookedAs} but every position carries 0 % VAT` + hint,
             suggestion:
               "If this is a service from a supplier established abroad, it is Reverse Charge: " +
               "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
@@ -262,6 +360,31 @@ const auditVat: ToolDef = {
               `but positions use ${bad.join(" / ")} %.`,
             suggestion: "Correct either the tax rule or the position rate — they contradict each other.",
           });
+        }
+      }
+
+      // The booking account must allow the chosen tax rule (sevDesk rejects
+      // the combination with a 422 at booking time — ReceiptGuidance is the
+      // authoritative table).
+      if (guidance.byAccountId && effectiveRule) {
+        for (const p of pos) {
+          const accId = String((p.accountDatev as Row | undefined)?.id ?? "");
+          const acc = accId ? guidance.byAccountId.get(accId) : undefined;
+          if (acc && acc.allowed.size > 0 && !acc.allowed.has(effectiveRule)) {
+            findings.push({
+              severity: "high",
+              code: "account_rule_mismatch",
+              voucherId: id,
+              voucher: label,
+              detail:
+                `Position account ${acc.number} "${acc.name}" does not allow "${tax.label}" ` +
+                `(taxRule ${effectiveRule}); it allows taxRule ${[...acc.allowed].join(", ")}.`,
+              suggestion:
+                "Either the booking account or the tax rule is wrong — sevDesk will refuse this " +
+                "combination when the voucher is booked.",
+            });
+            break;
+          }
         }
       }
 
@@ -402,6 +525,7 @@ const reverseChargeReport: ToolDef = {
     const period = readPeriod(args);
     const rate = optNumber(args, "rate") ?? 19;
     const vouchers = await fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000);
+    const { countries, warnings } = await fetchSupplierCountries(ctx);
 
     const deductible: Row[] = [];
     const nonDeductible: Row[] = [];
@@ -425,7 +549,7 @@ const reverseChargeReport: ToolDef = {
         (tax.side ?? "expense") === "expense" &&
         (effective === "9" || effective === "10") &&
         num(v.sumTax) === 0 &&
-        looksForeign(name)
+        classifyForeign(name, countries).verdict === "foreign"
       ) {
         suspected.push({ voucher: voucherLabel(v), bookedAs: tax.label, gross });
       }
@@ -443,6 +567,7 @@ const reverseChargeReport: ToolDef = {
         to: period.to ? ymd(period.to) : "today",
       },
       rateApplied: rate,
+      warnings,
       reverseChargeExpenses: {
         deductible: {
           count: deductible.length,
@@ -836,6 +961,112 @@ const diffReceiptFolder: ToolDef = {
 };
 
 /* ------------------------------------------------------------------ */
+/* 6. bank-transaction <-> voucher reconciliation                      */
+/* ------------------------------------------------------------------ */
+
+const TRANSACTION_STATUS: Record<string, string> = {
+  "100": "angelegt (kein Beleg verknüpft)",
+  "200": "verknüpft",
+  "300": "privat",
+  "400": "gebucht",
+};
+
+const reconcileTransactions: ToolDef = {
+  name: "sevdesk_reconcile_transactions",
+  title: "Reconcile bank transactions with vouchers",
+  description:
+    "Match bank transactions against vouchers by amount and date proximity, in both directions: " +
+    "payments with no plausible voucher (missing receipts) and non-draft vouchers no payment " +
+    "covers. Matching is a heuristic — treat the result as a checklist, not a verdict. Read-only.",
+  mutating: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      from: str("Start of period, dd.mm.yyyy or yyyy-mm-dd."),
+      to: str("End of period, dd.mm.yyyy or yyyy-mm-dd."),
+      dayWindow: int("Maximum days between payment and voucher date to still count as a match (default 5)."),
+      maxItems: int("Safety cap per side (default 2000)."),
+    },
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const period = readPeriod(args);
+    const window = optNumber(args, "dayWindow") ?? 5;
+    const maxItems = optNumber(args, "maxItems") ?? 2000;
+
+    const [transactions, vouchers] = await Promise.all([
+      ctx.client.getAll<Row>("/CheckAccountTransaction", {}, { maxItems }),
+      fetchVouchers(ctx, period, maxItems),
+    ]);
+    const txs = transactions.filter((t) => inPeriod(parseSevdeskDate(t.valueDate), period));
+
+    const candidates = vouchers.map((v) => ({
+      v,
+      gross: round2(num(v.sumGross)),
+      date: parseSevdeskDate(v.voucherDate),
+      side: voucherSide(v) ?? "expense",
+      used: false,
+    }));
+
+    const dayDiff = (a: Date | null, b: Date | null): number =>
+      a && b ? Math.abs(a.getTime() - b.getTime()) / 86_400_000 : Number.POSITIVE_INFINITY;
+
+    let matched = 0;
+    const unmatchedTransactions: Row[] = [];
+    for (const t of txs) {
+      const amount = num(t.amount);
+      const wantSide = amount < 0 ? "expense" : "revenue";
+      const txDate = parseSevdeskDate(t.valueDate);
+      const hit = candidates
+        .filter(
+          (c) =>
+            !c.used &&
+            c.side === wantSide &&
+            c.gross === round2(Math.abs(amount)) &&
+            dayDiff(c.date, txDate) <= window,
+        )
+        .sort((a, b) => dayDiff(a.date, txDate) - dayDiff(b.date, txDate))[0];
+      if (hit) {
+        hit.used = true;
+        matched += 1;
+      } else {
+        unmatchedTransactions.push({
+          date: txDate ? ymd(txDate) : null,
+          amount: round2(amount),
+          payee: t.payeePayerName ?? t.paymtPurpose ?? null,
+          status: TRANSACTION_STATUS[String(t.status)] ?? String(t.status ?? ""),
+        });
+      }
+    }
+
+    // Drafts have no payment by definition; everything else should have one.
+    const vouchersWithoutPayment = candidates
+      .filter((c) => !c.used && String(c.v.status) !== "50")
+      .map((c) => ({
+        id: String(c.v.id ?? ""),
+        label: voucherLabel(c.v),
+        status: VOUCHER_STATUS[String(c.v.status)] ?? String(c.v.status ?? ""),
+      }));
+
+    return {
+      period: {
+        from: period.from ? ymd(period.from) : "beginning",
+        to: period.to ? ymd(period.to) : "today",
+      },
+      transactionsExamined: txs.length,
+      vouchersExamined: vouchers.length,
+      matched,
+      unmatchedTransactions,
+      vouchersWithoutPayment,
+      note:
+        "Matching uses amount and date proximity only. Private transactions and internal " +
+        "transfers show up as unmatched by design; two same-amount bookings can pair the " +
+        "wrong way around.",
+    };
+  },
+};
+
+/* ------------------------------------------------------------------ */
 
 export const auditTools: ToolDef[] = [
   auditVat,
@@ -843,4 +1074,5 @@ export const auditTools: ToolDef[] = [
   findDuplicates,
   subscriptionGaps,
   diffReceiptFolder,
+  reconcileTransactions,
 ];

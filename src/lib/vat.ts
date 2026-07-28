@@ -183,6 +183,26 @@ export const TAX_RULES = {
     usableInVouchers: true,
     kleinunternehmer: false,
   },
+  // Not in the spec's documentation tables, but returned by the live
+  // ReceiptGuidance endpoints (e.g. Privatentnahmen, durchlaufende Posten).
+  "16": {
+    label: "Nicht steuerbar (Ausgabe)",
+    side: "expense",
+    allowedRates: [0],
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+  "22": {
+    label: "Nicht steuerbar (Einnahme)",
+    side: "revenue",
+    allowedRates: [0],
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
 } as const satisfies Record<string, TaxRule>;
 
 export type TaxRuleId = keyof typeof TAX_RULES;
@@ -411,6 +431,34 @@ export function looksForeign(supplierName: string | undefined | null): boolean {
   if (!supplierName) return false;
   if (DOMESTIC_MARKERS.some((re) => re.test(supplierName))) return false;
   return FOREIGN_MARKERS.some((re) => re.test(supplierName));
+}
+
+export interface ForeignVerdict {
+  verdict: "foreign" | "domestic" | "unknown";
+  /** What decided it: the contact's registered country, or the name-suffix heuristic. */
+  source: "country" | "suffix" | null;
+  /** Lower-case ISO code when a contact record was matched. */
+  country: string | null;
+}
+
+/**
+ * Where a supplier is established. The contact's country (keyed by
+ * `supplierKey`) is authoritative when present; otherwise the legal-suffix
+ * heuristic gives a hint, never a verdict.
+ */
+export function classifyForeign(
+  name: string | undefined | null,
+  countryBySupplier?: ReadonlyMap<string, string>,
+): ForeignVerdict {
+  const key = supplierKey(name ?? "");
+  const country = (key && countryBySupplier?.get(key)) || null;
+  if (country) {
+    return { verdict: country === "de" ? "domestic" : "foreign", source: "country", country };
+  }
+  if (name && looksForeign(name)) {
+    return { verdict: "foreign", source: "suffix", country: null };
+  }
+  return { verdict: "unknown", source: null, country: null };
 }
 
 /** Normalised supplier key so "Acme Org" and "acme org." group together. */

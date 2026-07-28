@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   LEGACY_TAX_TYPE_RULES,
   TAX_RULES,
+  classifyForeign,
   looksForeign,
   monthKey,
   num,
@@ -51,6 +52,47 @@ describe("tax rule reference", () => {
       expect(TAX_RULES[id].usableInVouchers).toBe(false);
     }
     expect(TAX_RULES["9"].usableInVouchers).toBe(true);
+  });
+
+  it("knows the non-taxable rules the live ReceiptGuidance exposes", () => {
+    expect(TAX_RULES["16"].side).toBe("expense");
+    expect(TAX_RULES["16"].allowedRates).toEqual([0]);
+    expect(TAX_RULES["22"].side).toBe("revenue");
+    expect(TAX_RULES["22"].reverseCharge).toBe(false);
+  });
+});
+
+describe("classifyForeign", () => {
+  const countries = new Map([
+    [supplierKey("Acme Org"), "us"],
+    [supplierKey("Musterbau GmbH"), "de"],
+  ]);
+
+  it("trusts the contact country over everything", () => {
+    expect(classifyForeign("Acme Org", countries)).toEqual({
+      verdict: "foreign",
+      source: "country",
+      country: "us",
+    });
+    expect(classifyForeign("Musterbau GmbH", countries)).toEqual({
+      verdict: "domestic",
+      source: "country",
+      country: "de",
+    });
+  });
+
+  it("falls back to the legal-suffix heuristic", () => {
+    expect(classifyForeign("Brightpath International Ltd.", countries)).toEqual({
+      verdict: "foreign",
+      source: "suffix",
+      country: null,
+    });
+  });
+
+  it("stays agnostic without any signal", () => {
+    expect(classifyForeign("Nordlicht Studio", countries).verdict).toBe("unknown");
+    expect(classifyForeign(null, countries).verdict).toBe("unknown");
+    expect(classifyForeign("Acme Org").verdict).toBe("unknown");
   });
 });
 
