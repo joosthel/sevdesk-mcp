@@ -48,11 +48,15 @@ function assertAllowedPath(ctx: ToolContext, filePath: string): string {
   if (!isAbsolute(filePath)) throw new Error("File path must be absolute.");
   const target = resolve(filePath);
   const allow = ctx.config.allowedReceiptDirs;
-  if (allow.length > 0) {
-    const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
-    if (!ok) {
-      throw new Error(`Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`);
-    }
+  if (allow.length === 0) {
+    throw new Error(
+      "Refused: filesystem access is disabled by default. Set SEVDESK_RECEIPT_DIRS to a " +
+        "colon-separated allowlist of directories to enable the receipt file tools.",
+    );
+  }
+  const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
+  if (!ok) {
+    throw new Error(`Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`);
   }
   return target;
 }
@@ -91,7 +95,7 @@ const ping: ToolDef = {
       mode: ctx.config.readOnly ? "READ-ONLY" : ctx.config.dryRun ? "DRY-RUN" : "read/write",
       receiptDirsAllowed: ctx.config.allowedReceiptDirs.length
         ? ctx.config.allowedReceiptDirs
-        : "unrestricted (SEVDESK_RECEIPT_DIRS not set)",
+        : "file tools disabled (SEVDESK_RECEIPT_DIRS not set)",
     };
   },
 };

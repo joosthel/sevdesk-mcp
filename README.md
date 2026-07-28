@@ -4,7 +4,7 @@ An MCP server for the [sevDesk](https://sevdesk.de) accounting API — **complet
 
 Most API wrappers stop at CRUD. This one also knows what a *wrong* booking looks like: a US supplier booked as domestic 0 % instead of Reverse Charge §13b, a net amount typed into a gross field, the same supplier booked three different ways, a subscription that silently stopped appearing in March.
 
-> **Status: v0.2.0.** Builds, typechecks, passes its unit tests, and the audit tools have been validated against a live sevDesk account (bookkeeping system 2.0) — where they found exactly the class of mis-booking they were built for.
+> **Status: v0.3.0.** Builds, typechecks, passes its unit tests, and the audit tools have been validated against a live sevDesk account (bookkeeping system 2.0) — where they found exactly the class of mis-booking they were built for. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Why
 
@@ -39,21 +39,24 @@ The classic mis-booking: a subscription from a supplier established abroad, book
 
 ## Tools
 
-**16 tools cover all 151 API operations.**
+**19 tools cover all 151 API operations.**
 
 ### Audit (the reason this exists)
 
 | Tool | What it does |
 |---|---|
-| `sevdesk_audit_vat` | Flags reverse-charge mis-bookings, rules from the wrong side of the books, rates that contradict the tax rule, sums that don't add up, suppliers booked inconsistently |
+| `sevdesk_audit_vat` | Flags reverse-charge mis-bookings, rules from the wrong side of the books, tax rules the booking account doesn't allow, rates that contradict the tax rule, sums that don't add up, suppliers booked inconsistently. Uses the supplier contact's country where available; falls back to a name heuristic |
 | `sevdesk_reverse_charge_report` | Totals the §13b tax base for a period — split into nets-to-zero (rule 12/14), actually payable (rule 13) and own revenue (rule 5) — and lists vouchers that look like they belong in it but aren't |
 | `sevdesk_find_duplicates` | Repeated document numbers, same supplier + amount within N days, vouchers stuck in Entwurf |
 | `sevdesk_subscription_gaps` | Detects monthly cadences per supplier and reports the missing months |
 | `sevdesk_diff_receipt_folder` | Diffs a local folder of receipt PDFs against booked vouchers, both directions |
+| `sevdesk_reconcile_transactions` | Matches bank transactions against vouchers by amount and date proximity: payments without a receipt, vouchers without a payment |
 
 ### Everyday
 
-`sevdesk_ping` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher`
+`sevdesk_ping` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_receipt_guidance` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher` · `sevdesk_set_tax_rule`
+
+`sevdesk_receipt_guidance` answers "which booking account / tax rule / rate combinations does sevDesk actually accept" from sevDesk's own validation table. `sevdesk_set_tax_rule` rebooks a voucher onto a different VAT rule with guardrails: it refuses enshrined vouchers and wrong-side rules, previews with `dryRun`, and verifies the result by reading the voucher back.
 
 ### Full coverage
 
@@ -89,6 +92,18 @@ Add to your MCP client configuration:
 
 Get the token from sevDesk under **Settings → Users → your user → API**.
 
+## What to ask it
+
+Once connected, prompts like these exercise the whole suite:
+
+- *"Run a VAT audit for this year and explain every high-severity finding."*
+- *"Are my US software subscriptions booked as reverse charge? What's my §13b base this quarter?"*
+- *"Which bank payments have no receipt yet?"*
+- *"Which booking accounts allow taxRule 12?"*
+- *"Rebook voucher 12345 onto taxRule 12 — dry run first."* (needs write mode)
+- *"Find duplicate bookings and drafts I forgot."*
+- *"Call the sevDesk API: get the last 10 orders."* (the generic catalogue covers everything the curated tools don't)
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -96,12 +111,12 @@ Get the token from sevDesk under **Settings → Users → your user → API**.
 | `SEVDESK_API_TOKEN` | *(required)* | Your sevDesk API token |
 | `SEVDESK_READ_ONLY` | `false` | Hide write tools; `sevdesk_call` stays listed but refuses mutating operations at call time |
 | `SEVDESK_DRY_RUN` | `false` | Show what a write *would* send, without sending it |
-| `SEVDESK_RECEIPT_DIRS` | *(unset)* | Colon-separated allowlist of directories the file tools may touch |
+| `SEVDESK_RECEIPT_DIRS` | *(unset — file tools disabled)* | Colon-separated allowlist of directories the receipt file tools may read |
 | `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | Override the API host |
 | `SEVDESK_TIMEOUT_MS` | `30000` | Per-request timeout |
 | `SEVDESK_MAX_RETRIES` | `3` | Retries on 429/5xx, with backoff and `Retry-After` |
 
-**A sevDesk API token has no scopes — it can do everything your login can.** Start with `SEVDESK_READ_ONLY=true` and only relax it once you trust the setup. `sevdesk_create_voucher` defaults to status `50` (Entwurf) so nothing is booked without you looking at it.
+**A sevDesk API token has no scopes — it can do everything your login can.** Start with `SEVDESK_READ_ONLY=true` and only relax it once you trust the setup. `sevdesk_create_voucher` defaults to status `50` (Entwurf) so nothing is booked without you looking at it. The threat model, guarantees and reporting process are documented in [SECURITY.md](SECURITY.md).
 
 ## Regenerating the catalogue
 
@@ -123,7 +138,7 @@ npm run typecheck  # tsc --noEmit
 
 - [x] Validate every audit tool against a live account (done, bookkeeping system 2.0, 2026-07)
 - [x] Confirm `/VoucherPos` filtering by voucher id (works; one request per voucher, capped at 5 concurrent)
-- [ ] `looksForeign()` is a legal-suffix heuristic and misses foreign suppliers without one (e.g. a bare "Org"); use the contact's country or VAT ID where present
+- [x] Use the contact's country where present instead of the name-suffix heuristic (done; the heuristic remains the fallback for suppliers without a contact record)
 - [ ] Remote hosting via the Streamable HTTP transport with a per-request token — server assembly is already factored out of the stdio entry point (`src/server.ts`)
 - [ ] Publish to npm for `npx` installs
 - [ ] Integration tests against a sevDesk sandbox

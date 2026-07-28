@@ -866,13 +866,17 @@ const diffReceiptFolder: ToolDef = {
     const target = resolve(dir);
 
     const allow = ctx.config.allowedReceiptDirs;
-    if (allow.length > 0) {
-      const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
-      if (!ok) {
-        throw new Error(
-          `Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`,
-        );
-      }
+    if (allow.length === 0) {
+      throw new Error(
+        "Refused: filesystem access is disabled by default. Set SEVDESK_RECEIPT_DIRS to a " +
+          "colon-separated allowlist of directories to enable the receipt file tools.",
+      );
+    }
+    const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
+    if (!ok) {
+      throw new Error(
+        `Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`,
+      );
     }
 
     const info = await stat(target).catch(() => null);

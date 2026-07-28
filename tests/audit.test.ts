@@ -42,7 +42,7 @@ function stubCtx(d: StubData): ToolContext {
       return { status: 200, data: {} };
     },
   };
-  return { client, config: {} } as unknown as ToolContext;
+  return { client, config: { allowedReceiptDirs: [] } } as unknown as ToolContext;
 }
 
 function voucher(overrides: Row): Row {
@@ -227,6 +227,15 @@ describe("sevdesk_reverse_charge_report", () => {
       possiblyMissing: { count: number };
     };
     expect(result.possiblyMissing.count).toBe(1);
+  });
+});
+
+describe("sevdesk_diff_receipt_folder", () => {
+  it("refuses filesystem access when no allowlist is configured", async () => {
+    const diff = auditTools.find((t) => t.name === "sevdesk_diff_receipt_folder")!;
+    await expect(diff.handler({ directory: "/tmp/receipts" }, stubCtx({}))).rejects.toThrow(
+      /SEVDESK_RECEIPT_DIRS/,
+    );
   });
 });
 
