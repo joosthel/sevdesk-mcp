@@ -60,15 +60,31 @@ const ping: ToolDef = {
   name: "sevdesk_ping",
   title: "Check the sevDesk connection",
   description:
-    "Verify that the API token works and report the server mode (read-only / dry-run). " +
+    "Verify that the API token works, report the server mode (read-only / dry-run) and the " +
+    "account's bookkeeping system version (1.0 uses taxType, 2.0 uses taxRule). " +
     "Run this first when something behaves unexpectedly.",
   mutating: false,
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   async handler(_args, ctx) {
     const { status } = await ctx.client.request({ method: "GET", path: "/Voucher", query: { limit: 1 } });
+
+    // Which bookkeeping generation the account runs decides whether documents
+    // carry taxRule (Update 2.0) or the deprecated taxType (1.0).
+    let version: unknown = "unknown (endpoint not reachable)";
+    try {
+      const { data } = await ctx.client.request<{ objects?: { version?: unknown } }>({
+        method: "GET",
+        path: "/Tools/bookkeepingSystemVersion",
+      });
+      version = data?.objects?.version ?? data ?? version;
+    } catch {
+      // Some accounts may not expose the endpoint; the ping itself still counts.
+    }
+
     return {
       ok: status === 200,
       baseUrl: ctx.config.baseUrl,
+      bookkeepingSystemVersion: version,
       mode: ctx.config.readOnly ? "READ-ONLY" : ctx.config.dryRun ? "DRY-RUN" : "read/write",
       receiptDirsAllowed: ctx.config.allowedReceiptDirs.length
         ? ctx.config.allowedReceiptDirs
