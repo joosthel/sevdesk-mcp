@@ -1,7 +1,16 @@
 {
   "name": "sevdesk-mcp",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "MCP server for the sevDesk accounting API — full endpoint coverage plus bookkeeping audit tools (VAT/§13b reverse-charge checks, duplicate detection, folder↔sevDesk diff, subscription gap detection).",
+  "author": "Joost Helfers",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/joosthel/sevdesk-mcp.git"
+  },
+  "homepage": "https://github.com/joosthel/sevdesk-mcp#readme",
+  "bugs": {
+    "url": "https://github.com/joosthel/sevdesk-mcp/issues"
+  },
   "type": "module",
   "main": "dist/index.js",
   "bin": {
