@@ -1,0 +1,49 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write # create the GitHub release and attach the .mcpb bundle
+  id-token: write # npm provenance + MCP registry OIDC login
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      # Actions pinned to commit SHAs so a moved tag cannot change what runs.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          cache: npm
+          registry-url: https://registry.npmjs.org
+
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+
+      # Requires npm Trusted Publishing configured for this repo on npmjs.com
+      # (or set an NPM_TOKEN secret and add NODE_AUTH_TOKEN below).
+      - name: Publish to npm
+        run: npm publish --provenance --access public
+
+      - name: Publish to the MCP registry
+        run: |
+          curl -sL "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_linux_amd64.tar.gz" | tar xz mcp-publisher
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish
+
+      - name: Pack the MCPB bundle
+        run: |
+          npm prune --omit=dev
+          npx --yes @anthropic-ai/mcpb pack . sevdesk-mcp.mcpb
+
+      - name: Create the GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" sevdesk-mcp.mcpb \
+            --title "sevdesk-mcp ${GITHUB_REF_NAME}" \
+            --notes "See CHANGELOG.md — https://github.com/joosthel/sevdesk-mcp/blob/main/CHANGELOG.md"

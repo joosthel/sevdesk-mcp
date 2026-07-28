@@ -1,0 +1,11 @@
+src/
+tests/
+scripts/
+openapi/
+.github/
+server.json
+tsconfig.json
+vitest.config.ts
+CONTRIBUTING.md
+*.log
+.env*

@@ -1,0 +1,44 @@
+{
+  "manifest_version": "0.2",
+  "name": "sevdesk-mcp",
+  "display_name": "sevDesk",
+  "version": "0.4.0",
+  "description": "sevDesk accounting for Claude: vouchers, invoices, bank reconciliation and a built-in VAT audit layer.",
+  "long_description": "The complete MCP server for sevDesk: every API endpoint via a searchable catalogue, guarded write tools (drafts by default, dry-run everywhere), and audits that know what a wrong booking looks like — reverse-charge mis-bookings, account/tax-rule mismatches, duplicates, missing receipts.",
+  "author": { "name": "Joost Helfers", "url": "https://github.com/joosthel" },
+  "repository": { "type": "git", "url": "https://github.com/joosthel/sevdesk-mcp" },
+  "homepage": "https://github.com/joosthel/sevdesk-mcp",
+  "license": "MIT",
+  "server": {
+    "type": "node",
+    "entry_point": "dist/index.js",
+    "mcp_config": {
+      "command": "node",
+      "args": ["${__dirname}/dist/index.js"],
+      "env": {
+        "SEVDESK_API_TOKEN": "${user_config.api_token}",
+        "SEVDESK_READ_ONLY": "${user_config.read_only}"
+      }
+    }
+  },
+  "user_config": {
+    "api_token": {
+      "type": "string",
+      "title": "sevDesk API token",
+      "description": "Found in sevDesk under Settings → Users → your user → API. The token has no scopes — treat it like a password.",
+      "sensitive": true,
+      "required": true
+    },
+    "read_only": {
+      "type": "boolean",
+      "title": "Read-only mode",
+      "description": "Keep on until you deliberately want Claude to write to your books.",
+      "default": true
+    }
+  },
+  "compatibility": {
+    "platforms": ["darwin", "win32", "linux"],
+    "runtimes": { "node": ">=20" }
+  },
+  "keywords": ["sevdesk", "accounting", "buchhaltung", "vat", "umsatzsteuer", "reverse-charge"]
+}

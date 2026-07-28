@@ -1,0 +1,34 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
+  "name": "io.github.joosthel/sevdesk-mcp",
+  "description": "MCP server for the sevDesk accounting API — full endpoint coverage plus a bookkeeping audit layer (VAT/§13b reverse-charge checks, duplicate detection, bank reconciliation).",
+  "repository": {
+    "url": "https://github.com/joosthel/sevdesk-mcp",
+    "source": "github"
+  },
+  "version": "0.4.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "registryBaseUrl": "https://registry.npmjs.org",
+      "identifier": "sevdesk-mcp",
+      "version": "0.4.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        {
+          "name": "SEVDESK_API_TOKEN",
+          "description": "sevDesk API token (Settings → Users → your user → API)",
+          "isRequired": true,
+          "isSecret": true,
+          "format": "string"
+        },
+        {
+          "name": "SEVDESK_READ_ONLY",
+          "description": "Start in read-only mode (recommended: true)",
+          "isRequired": false,
+          "format": "boolean"
+        }
+      ]
+    }
+  ]
+}
