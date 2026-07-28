@@ -9,7 +9,7 @@ import { auditTools } from "./tools/audit.js";
 import { discoveryTools } from "./tools/discovery.js";
 import { resourceTools } from "./tools/resources.js";
 
-export const VERSION = "0.3.0";
+export const VERSION = "0.3.1";
 
 /** Every tool the server exposes, in listing order. */
 export const tools: ToolDef[] = [...resourceTools, ...auditTools, ...discoveryTools];

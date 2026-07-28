@@ -556,7 +556,10 @@ const setTaxRule: ToolDef = {
     "Rebook a voucher onto a different VAT rule (e.g. from 'Vorsteuerabziehbare Aufwendungen' " +
     "onto Reverse Charge §13b, taxRule 12) with guardrails: refuses enshrined vouchers and rules " +
     "from the wrong side of the books, verifies the result afterwards, and previews the request " +
-    "with dryRun. The voucher's positions keep their rates.",
+    "with dryRun. The voucher's positions keep their rates. Only works on draft vouchers — the " +
+    "sevDesk API refuses updates on booked/paid ones, and resetting a paid foreign-currency " +
+    "voucher via the API recalculates its EUR amounts at today's rate. Correct paid vouchers in " +
+    "the sevDesk UI instead.",
   mutating: true,
   inputSchema: {
     type: "object",

@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.3.1 — 2026-07-28
+
+- README restructured around step-by-step setup instructions (Claude Code,
+  Claude Desktop, generic MCP clients) and a documented write-safety model.
+- `sevdesk_set_tax_rule` documents its deliberate draft-only scope: the
+  sevDesk API refuses updates on booked vouchers, and resetting a paid
+  foreign-currency voucher recalculates its EUR amounts at today's exchange
+  rate — booked vouchers belong in the sevDesk UI. Found the hard way on
+  live data; the tool description now warns about it.
+
 ## 0.3.0 — 2026-07-28
 
 - `sevdesk_receipt_guidance`: query sevDesk's booking-account guidance —
