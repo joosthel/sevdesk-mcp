@@ -2,7 +2,6 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, extname, isAbsolute, resolve, sep } from "node:path";
 
 import {
-  LEGACY_TAX_TYPES,
   TAX_RULES,
   VOUCHER_STATUS,
   looksForeign,
@@ -64,8 +63,12 @@ async function fetchVouchers(ctx: ToolContext, period: PeriodArgs, maxItems: num
   return all.filter((v) => inPeriod(parseSevdeskDate(v.voucherDate), period));
 }
 
-async function fetchPositions(ctx: ToolContext, vouchers: Row[]): Promise<Map<string, Row[]>> {
-  const map = new Map<string, Row[]>();
+async function fetchPositions(
+  ctx: ToolContext,
+  vouchers: Row[],
+): Promise<{ positions: Map<string, Row[]>; warnings: string[] }> {
+  const positions = new Map<string, Row[]>();
+  const warnings: string[] = [];
   await mapLimit(vouchers, 5, async (v) => {
     const id = String(v.id ?? "");
     if (!id) return;
@@ -75,12 +78,18 @@ async function fetchPositions(ctx: ToolContext, vouchers: Row[]): Promise<Map<st
         path: "/VoucherPos",
         query: { "voucher[id]": id, "voucher[objectName]": "Voucher", limit: 200 },
       });
-      map.set(id, data?.objects ?? []);
-    } catch {
-      map.set(id, []);
+      positions.set(id, data?.objects ?? []);
+    } catch (err) {
+      // A failed fetch must not fail the whole audit, but silently treating it
+      // as "no positions" would suppress rate-based findings — say so.
+      positions.set(id, []);
+      warnings.push(
+        `Positions for voucher ${id} could not be fetched ` +
+          `(${err instanceof Error ? err.message : String(err)}); rate checks were skipped for it.`,
+      );
     }
   });
-  return map;
+  return { positions, warnings };
 }
 
 function voucherLabel(v: Row): string {
@@ -112,11 +121,12 @@ const auditVat: ToolDef = {
   name: "sevdesk_audit_vat",
   title: "Audit VAT treatment of vouchers",
   description:
-    "Sweep incoming vouchers (Belege) and flag VAT problems: foreign suppliers booked as " +
-    "domestic instead of Reverse Charge §13b (taxRule 5 / taxType 'noteu'), tax rates that " +
-    "contradict the chosen tax rule, sums that do not add up, and the same supplier booked " +
-    "inconsistently across vouchers. Read-only. This is the check that tells you whether " +
-    "your §13b turnover will be reported correctly in the annual VAT return.",
+    "Sweep vouchers (Belege) and flag VAT problems: foreign suppliers booked as plain " +
+    "domestic expenses (taxRule 9/10) instead of Reverse Charge §13b (taxRule 12/13/14), " +
+    "revenue rules sitting on expense vouchers, tax rates that contradict the chosen rule, " +
+    "sums that do not add up, and the same supplier booked inconsistently across vouchers. " +
+    "Read-only. This is the check that tells you whether your §13b amounts will be reported " +
+    "correctly in the VAT return.",
   mutating: false,
   inputSchema: {
     type: "object",
@@ -132,7 +142,9 @@ const auditVat: ToolDef = {
     const period = readPeriod(args);
     const withPositions = optBool(args, "includePositions") ?? true;
     const vouchers = await fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000);
-    const positions = withPositions ? await fetchPositions(ctx, vouchers) : new Map<string, Row[]>();
+    const { positions, warnings } = withPositions
+      ? await fetchPositions(ctx, vouchers)
+      : { positions: new Map<string, Row[]>(), warnings: [] };
 
     const findings: Finding[] = [];
     const bySupplier = new Map<string, { rules: Set<string>; rates: Set<number>; names: Set<string> }>();
@@ -166,25 +178,74 @@ const auditVat: ToolDef = {
         });
       }
 
-      // The headline check: foreign supplier, zero rate, but booked as domestic.
-      const allZero = rates.length > 0 && rates.every((r) => r === 0);
-      const domesticRule = tax.ruleId === "1" || tax.legacyType === "default";
-      if (domesticRule && allZero) {
-        const foreign = looksForeign(name);
+      // Rules from the wrong side of the books, or ones the API refuses on vouchers.
+      if (tax.sideMismatch && tax.ruleId) {
+        const rule = TAX_RULES[tax.ruleId];
         findings.push({
-          severity: foreign ? "high" : "medium",
-          code: "zero_rate_booked_as_domestic",
+          severity: "high",
+          code: "rule_side_mismatch",
           voucherId: id,
           voucher: label,
           detail:
-            `Booked as "${tax.label}" (${tax.ruleId ? `taxRule ${tax.ruleId}` : `taxType ${tax.legacyType}`}) ` +
-            `but every position carries 0 % VAT` +
-            (foreign ? `, and the supplier name looks non-German.` : `.`),
+            `This is ${tax.side === "expense" ? "an expense" : "a revenue"} voucher (creditDebit ` +
+            `"${String(v.creditDebit)}") but "${rule.label}" (taxRule ${tax.ruleId}) is a ${rule.side} rule.`,
           suggestion:
-            "If this is a service from a supplier established abroad, it is Reverse Charge: " +
-            "set taxRule 5 (§13b UStG) — or taxRule 3 for an intra-EU acquisition. Otherwise " +
-            "confirm the supplier really invoices without VAT.",
+            tax.side === "expense"
+              ? "Expense vouchers use taxRule 8, 9, 10, 12, 13 or 14."
+              : "Revenue documents use taxRule 1, 2, 3, 4, 5, 11 or 17.",
         });
+      }
+
+      if (!tax.usableInVouchers && tax.ruleId) {
+        findings.push({
+          severity: "high",
+          code: "rule_not_usable_in_vouchers",
+          voucherId: id,
+          voucher: label,
+          detail: `"${tax.label}" (taxRule ${tax.ruleId}) is not accepted on vouchers by the sevDesk API.`,
+          suggestion:
+            "Rebook with a voucher-capable rule — One Stop Shop and §18b only exist on invoices.",
+        });
+      }
+
+      // The headline check: everything at 0 % but booked under a plain domestic
+      // rule. On the expense side that is the classic missed reverse charge; on
+      // the revenue side it usually means a missing export/EU/§4 rule.
+      // /Voucher documents without creditDebit are treated as expenses — that
+      // is what vouchers overwhelmingly are.
+      const allZero = rates.length > 0 && rates.every((r) => r === 0);
+      const effectiveRule = tax.ruleId ?? tax.equivalentRuleId;
+      const side = tax.side ?? "expense";
+      if (allZero && !tax.reverseCharge && !tax.sideMismatch && !tax.unknown) {
+        const foreign = looksForeign(name);
+        const bookedAs = `"${tax.label}" (${tax.ruleId ? `taxRule ${tax.ruleId}` : `taxType ${tax.legacyType}`})`;
+        if (side === "expense" && (effectiveRule === "9" || effectiveRule === "10")) {
+          findings.push({
+            severity: foreign ? "high" : "medium",
+            code: "zero_rate_booked_as_domestic",
+            voucherId: id,
+            voucher: label,
+            detail:
+              `Booked as ${bookedAs} but every position carries 0 % VAT` +
+              (foreign ? `, and the supplier name looks non-German.` : `.`),
+            suggestion:
+              "If this is a service from a supplier established abroad, it is Reverse Charge: " +
+              "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
+              "taxRule 13 (without input-tax deduction) — or taxRule 8 for intra-EU goods. " +
+              "Otherwise confirm the supplier really invoices without VAT.",
+          });
+        } else if (side === "revenue" && effectiveRule === "1") {
+          findings.push({
+            severity: "medium",
+            code: "zero_rate_booked_as_domestic",
+            voucherId: id,
+            voucher: label,
+            detail: `Booked as ${bookedAs} but every position carries 0 % VAT.`,
+            suggestion:
+              "Taxable domestic revenue at 0 % is unusual. Exports use taxRule 2, intra-EU " +
+              "supplies taxRule 3, §4-exempt revenue taxRule 4, non-domestic services taxRule 17.",
+          });
+        }
       }
 
       // Rates that the chosen rule does not permit.
@@ -289,18 +350,30 @@ const auditVat: ToolDef = {
       },
       vouchersExamined: vouchers.length,
       positionsFetched: withPositions,
+      warnings,
       findingCount: findings.length,
       byCode: counts,
       findings,
-      taxRuleReference: Object.fromEntries(
-        Object.entries(TAX_RULES).map(([id, r]) => [
-          id,
-          `${r.label}${r.legacyTaxType ? ` (legacy taxType "${r.legacyTaxType}")` : ""} — rates ${r.allowedRates.join("/")} %`,
-        ]),
-      ),
+      taxRuleReference: {
+        revenue: ruleSummaries("revenue"),
+        expense: ruleSummaries("expense"),
+      },
     };
   },
 };
+
+function ruleSummaries(side: "revenue" | "expense"): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(TAX_RULES)
+      .filter(([, r]) => r.side === side)
+      .map(([id, r]) => [
+        id,
+        `${r.label}${r.legacyTaxType ? ` (legacy taxType "${r.legacyTaxType}")` : ""} — rates ` +
+          (r.allowedRates ? `${r.allowedRates.join("/")} %` : "country-dependent") +
+          (r.usableInVouchers ? "" : " — not usable on vouchers"),
+      ]),
+  );
+}
 
 /* ------------------------------------------------------------------ */
 /* 2. reverse-charge report                                            */
@@ -310,9 +383,10 @@ const reverseChargeReport: ToolDef = {
   name: "sevdesk_reverse_charge_report",
   title: "Reverse-charge (§13b) report",
   description:
-    "Total the reverse-charge tax base for a period and compute the VAT to declare on both " +
-    "sides of the return. Lists the contributing vouchers and, separately, vouchers that look " +
-    "like they should be reverse charge but are not booked that way. Read-only.",
+    "Total the reverse-charge (§13b) tax base for a period, split by meaning: expense vouchers " +
+    "with input-tax deduction (taxRule 12/14, nets to zero), without deduction (taxRule 13, VAT " +
+    "actually payable), and your own §13b revenue (taxRule 5). Separately lists vouchers that " +
+    "look like they belong in the report but are not booked that way. Read-only.",
   mutating: false,
   inputSchema: {
     type: "object",
@@ -329,23 +403,39 @@ const reverseChargeReport: ToolDef = {
     const rate = optNumber(args, "rate") ?? 19;
     const vouchers = await fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000);
 
-    const booked: Row[] = [];
+    const deductible: Row[] = [];
+    const nonDeductible: Row[] = [];
+    const ownRevenue: Row[] = [];
+    const legacy: Row[] = [];
     const suspected: Row[] = [];
-    let base = 0;
 
     for (const v of vouchers) {
       const tax = readTaxTreatment(v);
       const gross = round2(num(v.sumGross));
       const name = String(v.supplierName ?? (v.supplier as Row | undefined)?.name ?? "");
+      const effective = tax.ruleId ?? tax.equivalentRuleId;
+      const row: Row = { voucher: voucherLabel(v), rule: tax.label, gross };
+
       if (tax.reverseCharge) {
-        base += gross;
-        booked.push({ voucher: voucherLabel(v), rule: tax.label, gross });
-      } else if ((tax.ruleId === "1" || tax.legacyType === "default") && num(v.sumTax) === 0 && looksForeign(name)) {
+        if (effective === "12" || effective === "14") deductible.push(row);
+        else if (effective === "13") nonDeductible.push(row);
+        else if (effective === "5" || effective === "21") ownRevenue.push(row);
+        else legacy.push(row); // deprecated taxType "noteu" with no modern rule attached
+      } else if (
+        (tax.side ?? "expense") === "expense" &&
+        (effective === "9" || effective === "10") &&
+        num(v.sumTax) === 0 &&
+        looksForeign(name)
+      ) {
         suspected.push({ voucher: voucherLabel(v), bookedAs: tax.label, gross });
       }
     }
 
-    const suspectedBase = suspected.reduce((s, r) => s + num(r.gross), 0);
+    const sum = (rows: Row[]): number => round2(rows.reduce((s, r) => s + num(r.gross), 0));
+    const deductibleBase = sum(deductible);
+    const nonDeductibleBase = sum(nonDeductible);
+    const legacyBase = sum(legacy);
+    const suspectedBase = sum(suspected);
 
     return {
       period: {
@@ -353,22 +443,48 @@ const reverseChargeReport: ToolDef = {
         to: period.to ? ymd(period.to) : "today",
       },
       rateApplied: rate,
-      bookedAsReverseCharge: {
-        count: booked.length,
-        taxBase: round2(base),
-        vatToDeclare: round2((base * rate) / 100),
+      reverseChargeExpenses: {
+        deductible: {
+          count: deductible.length,
+          taxBase: deductibleBase,
+          vatToDeclare: round2((deductibleBase * rate) / 100),
+          note:
+            "taxRule 12/14: declare as output tax and deduct as input tax. Nets to zero in " +
+            "the payment, but omitting it makes the return incomplete.",
+          vouchers: deductible,
+        },
+        nonDeductible: {
+          count: nonDeductible.length,
+          taxBase: nonDeductibleBase,
+          vatPayable: round2((nonDeductibleBase * rate) / 100),
+          note: "taxRule 13: no input-tax deduction — this VAT is actually payable.",
+          vouchers: nonDeductible,
+        },
+        legacy: {
+          count: legacy.length,
+          taxBase: legacyBase,
+          note:
+            "Booked with the deprecated taxType 'noteu' and no modern rule attached. Check " +
+            "each voucher and treat it like taxRule 12, 13 or 14.",
+          vouchers: legacy,
+        },
+      },
+      ownReverseChargeRevenue: {
+        count: ownRevenue.length,
+        taxBase: sum(ownRevenue),
         note:
-          "Declare this as both output tax (Steuer) and input tax (Vorsteuer). " +
-          "It nets to zero in the payment, but omitting it makes the return incomplete.",
-        vouchers: booked,
+          "Your own outgoing §13b turnover (taxRule 5, Feld 60): the customer owes the VAT — " +
+          "report the base only.",
+        vouchers: ownRevenue,
       },
       possiblyMissing: {
         count: suspected.length,
-        taxBase: round2(suspectedBase),
+        taxBase: suspectedBase,
         wouldAddVat: round2((suspectedBase * rate) / 100),
         note:
-          "These are booked as domestic with 0 % VAT and have a foreign-looking supplier. " +
-          "Verify each one — the heuristic reads company suffixes, it does not know where a supplier is established.",
+          "These are booked as plain expenses with 0 % VAT and have a foreign-looking supplier. " +
+          "Verify each one — the heuristic reads company suffixes, it does not know where a " +
+          "supplier is established.",
         vouchers: suspected,
       },
     };
@@ -728,5 +844,3 @@ export const auditTools: ToolDef[] = [
   subscriptionGaps,
   diffReceiptFolder,
 ];
-
-export { LEGACY_TAX_TYPES };

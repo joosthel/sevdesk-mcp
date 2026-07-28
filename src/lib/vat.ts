@@ -1,63 +1,226 @@
 /**
  * German VAT semantics as sevDesk models them.
  *
- * sevDesk 1.0 used `taxType` (a string); sevDesk 2.0 replaced it with
- * `taxRule` (an object holding a numeric id). Both still appear in API
- * responses depending on the account, so every check here understands both.
+ * sevDesk 1.0 used `taxType` (a string); the sevdesk-Update 2.0 replaced it
+ * with `taxRule` (an object holding a numeric id) and split the rules into a
+ * revenue set and an expense set. Documents created under either generation
+ * still appear in API responses, so every check here understands both.
  *
- * Source: sevDesk OpenAPI 2.0.0, Model_Voucher.taxRule / Model_Voucher.taxType.
+ * Source: sevDesk OpenAPI 2.0.0 — the "Tax Rules" tables in the API
+ * description, plus Model_Voucher.taxRule / .taxType / .creditDebit.
  */
 
+export type VoucherSide = "revenue" | "expense";
+
+export interface TaxRule {
+  label: string;
+  side: VoucherSide;
+  /** Position rates the API accepts for this rule; null = depends on the destination country (OSS). */
+  allowedRates: readonly number[] | null;
+  /** §13b/§18b rules: positions carry 0 % and the tax base belongs in the reverse-charge declaration. */
+  reverseCharge: boolean;
+  /** The deprecated 1.0 taxType this rule replaces, where the spec maps one. */
+  legacyTaxType: string | null;
+  /** The API rejects some revenue rules on vouchers (One Stop Shop, §18b). */
+  usableInVouchers: boolean;
+  /** Part of the Kleinunternehmer (§19 UStG) rule set. */
+  kleinunternehmer: boolean;
+}
+
 export const TAX_RULES = {
+  // Revenue (outgoing invoices, debit vouchers)
   "1": {
     label: "Umsatzsteuerpflichtige Umsätze",
-    legacyTaxType: "default",
+    side: "revenue",
     allowedRates: [0, 7, 19],
     reverseCharge: false,
+    legacyTaxType: "default",
+    usableInVouchers: true,
+    kleinunternehmer: false,
   },
   "2": {
     label: "Ausfuhren",
-    legacyTaxType: null,
+    side: "revenue",
     allowedRates: [0],
     reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
   },
   "3": {
     label: "Innergemeinschaftliche Lieferungen",
-    legacyTaxType: "eu",
+    side: "revenue",
     allowedRates: [0, 7, 19],
-    reverseCharge: true,
+    reverseCharge: false,
+    legacyTaxType: "eu",
+    usableInVouchers: true,
+    kleinunternehmer: false,
   },
   "4": {
     label: "Steuerfreie Umsätze §4 UStG",
-    legacyTaxType: null,
+    side: "revenue",
     allowedRates: [0],
     reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
   },
   "5": {
-    label: "Reverse Charge gem. §13b UStG",
-    legacyTaxType: "noteu",
+    label: "Reverse Charge gem. §13b UStG (Feld 60)",
+    side: "revenue",
     allowedRates: [0],
     reverseCharge: true,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
   },
   "11": {
     label: "Steuer nicht erhoben nach §19 UStG (Kleinunternehmer)",
-    legacyTaxType: "ss",
+    side: "revenue",
     allowedRates: [0],
     reverseCharge: false,
+    legacyTaxType: "ss",
+    usableInVouchers: true,
+    kleinunternehmer: true,
   },
-} as const;
+  "17": {
+    label: "Nicht im Inland steuerbare Leistung",
+    side: "revenue",
+    allowedRates: [0],
+    reverseCharge: false,
+    legacyTaxType: "noteu",
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+  "18": {
+    label: "One Stop Shop (goods)",
+    side: "revenue",
+    allowedRates: null,
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: false,
+    kleinunternehmer: false,
+  },
+  "19": {
+    label: "One Stop Shop (electronic service)",
+    side: "revenue",
+    allowedRates: null,
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: false,
+    kleinunternehmer: false,
+  },
+  "20": {
+    label: "One Stop Shop (other service)",
+    side: "revenue",
+    allowedRates: null,
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: false,
+    kleinunternehmer: false,
+  },
+  "21": {
+    label: "Reverse Charge gem. §18b UStG (Feld 21)",
+    side: "revenue",
+    allowedRates: [0],
+    reverseCharge: true,
+    legacyTaxType: null,
+    usableInVouchers: false,
+    kleinunternehmer: false,
+  },
+  // Expense (incoming vouchers, credit side)
+  "8": {
+    label: "Innergemeinschaftliche Erwerbe",
+    side: "expense",
+    allowedRates: [0, 7, 19],
+    reverseCharge: false,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+  "9": {
+    label: "Vorsteuerabziehbare Aufwendungen",
+    side: "expense",
+    allowedRates: [0, 7, 19],
+    reverseCharge: false,
+    legacyTaxType: "default",
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+  "10": {
+    label: "Nicht vorsteuerabziehbare Aufwendungen",
+    side: "expense",
+    allowedRates: [0],
+    reverseCharge: false,
+    legacyTaxType: "ss",
+    usableInVouchers: true,
+    kleinunternehmer: true,
+  },
+  "12": {
+    label: "Reverse Charge gem. §13b Abs. 2 UStG mit Vorsteuerabzug",
+    side: "expense",
+    allowedRates: [0],
+    reverseCharge: true,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+  "13": {
+    label: "Reverse Charge gem. §13b UStG ohne Vorsteuerabzug",
+    side: "expense",
+    allowedRates: [0],
+    reverseCharge: true,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: true,
+  },
+  "14": {
+    label: "Reverse Charge gem. §13b Abs. 1 EU Umsätze",
+    side: "expense",
+    allowedRates: [0],
+    reverseCharge: true,
+    legacyTaxType: null,
+    usableInVouchers: true,
+    kleinunternehmer: false,
+  },
+} as const satisfies Record<string, TaxRule>;
 
 export type TaxRuleId = keyof typeof TAX_RULES;
 
-export const LEGACY_TAX_TYPES: Record<string, { label: string; reverseCharge: boolean }> = {
-  default: { label: "Umsatzsteuer ausweisen", reverseCharge: false },
-  eu: { label: "Steuerfreie innergemeinschaftliche Lieferung (EU)", reverseCharge: true },
-  noteu: {
-    label: "Steuerschuldnerschaft des Leistungsempfängers (außerhalb EU)",
-    reverseCharge: true,
+/** Deprecated taxType → modern rule id, per side, as the 2.0 spec maps them. */
+export const LEGACY_TAX_TYPE_RULES: Record<VoucherSide, Record<string, TaxRuleId>> = {
+  revenue: { default: "1", eu: "3", noteu: "17", ss: "11" },
+  expense: { default: "9", ss: "10" },
+};
+
+/**
+ * Semantics for taxTypes the spec does not map on a given side (or when the
+ * side is unknown). These follow the 1.0 meaning: `noteu` marked reverse
+ * charge (§13b) — on today's expense side that is rule 12, 13 or 14.
+ * The spec is silent about expense-side `eu`/`noteu`; treat these as
+ * best-effort readings, not verdicts.
+ */
+const LEGACY_FALLBACK: Record<
+  string,
+  { label: string; reverseCharge: boolean; allowedRates: readonly number[] | null }
+> = {
+  default: { label: "Umsatzsteuer ausweisen", reverseCharge: false, allowedRates: null },
+  eu: {
+    label: "Innergemeinschaftliche Lieferung / Erwerb (EU)",
+    reverseCharge: false,
+    allowedRates: null,
   },
-  custom: { label: "Custom tax set", reverseCharge: false },
-  ss: { label: "Nicht umsatzsteuerpflichtig nach §19 Abs. 1 UStG", reverseCharge: false },
+  noteu: {
+    label: "Steuerschuldnerschaft des Leistungsempfängers (Reverse Charge)",
+    reverseCharge: true,
+    allowedRates: [0],
+  },
+  custom: { label: "Custom tax set", reverseCharge: false, allowedRates: null },
+  ss: {
+    label: "Nicht umsatzsteuerpflichtig nach §19 Abs. 1 UStG",
+    reverseCharge: false,
+    allowedRates: [0],
+  },
 };
 
 export const VOUCHER_STATUS: Record<string, string> = {
@@ -68,10 +231,17 @@ export const VOUCHER_STATUS: Record<string, string> = {
 
 export interface TaxTreatment {
   ruleId: TaxRuleId | null;
+  /** Modern rule the deprecated taxType maps to, when only a taxType was present. */
+  equivalentRuleId: TaxRuleId | null;
   legacyType: string | null;
   label: string;
+  /** Which side of the books the document belongs to, when determinable. */
+  side: VoucherSide | null;
+  /** The rule belongs to the other side than the document's creditDebit says. */
+  sideMismatch: boolean;
   reverseCharge: boolean;
   allowedRates: readonly number[] | null;
+  usableInVouchers: boolean;
   /** True when neither field was present — we cannot judge the booking. */
   unknown: boolean;
 }
@@ -80,49 +250,102 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" ? (value as Record<string, unknown>) : null;
 }
 
+function lookupTaxRule(id: unknown): { id: TaxRuleId; rule: TaxRule } | null {
+  if (id === undefined || id === null) return null;
+  const key = String(id);
+  if (key in TAX_RULES) {
+    const known = key as TaxRuleId;
+    return { id: known, rule: TAX_RULES[known] };
+  }
+  return null;
+}
+
+function declaredSide(d: Record<string, unknown> | null): VoucherSide | null {
+  const cd = typeof d?.creditDebit === "string" ? d.creditDebit.toUpperCase() : null;
+  if (cd === "C") return "expense";
+  if (cd === "D") return "revenue";
+  return null;
+}
+
+/**
+ * Which side of the books a voucher belongs to. `creditDebit` ('C' = money
+ * out = expense, 'D' = money in = revenue) wins; the tax rule's own side is
+ * the fallback.
+ */
+export function voucherSide(doc: unknown): VoucherSide | null {
+  const d = asRecord(doc);
+  const declared = declaredSide(d);
+  if (declared) return declared;
+  return lookupTaxRule(asRecord(d?.taxRule)?.id)?.rule.side ?? null;
+}
+
 /** Read the tax treatment off a voucher/invoice object, tolerating both API generations. */
 export function readTaxTreatment(doc: unknown): TaxTreatment {
   const d = asRecord(doc);
-  const rule = asRecord(d?.taxRule);
-  const rawId = rule?.id;
-  const ruleId =
-    rawId !== undefined && rawId !== null && String(rawId) in TAX_RULES
-      ? (String(rawId) as TaxRuleId)
-      : null;
+  const side = declaredSide(d);
+  const found = lookupTaxRule(asRecord(d?.taxRule)?.id);
 
   const rawLegacy = d?.taxType;
-  const legacyType = typeof rawLegacy === "string" && rawLegacy in LEGACY_TAX_TYPES
-    ? rawLegacy
-    : null;
+  const legacyType =
+    typeof rawLegacy === "string" && rawLegacy in LEGACY_FALLBACK ? rawLegacy : null;
 
-  if (ruleId) {
-    const r = TAX_RULES[ruleId];
+  if (found) {
     return {
-      ruleId,
+      ruleId: found.id,
+      equivalentRuleId: null,
       legacyType,
-      label: r.label,
-      reverseCharge: r.reverseCharge,
-      allowedRates: r.allowedRates,
+      label: found.rule.label,
+      side: side ?? found.rule.side,
+      sideMismatch: side !== null && side !== found.rule.side,
+      reverseCharge: found.rule.reverseCharge,
+      allowedRates: found.rule.allowedRates,
+      usableInVouchers: found.rule.usableInVouchers,
       unknown: false,
     };
   }
+
   if (legacyType) {
-    const l = LEGACY_TAX_TYPES[legacyType]!;
+    const mappedId = side ? LEGACY_TAX_TYPE_RULES[side][legacyType] : undefined;
+    if (mappedId) {
+      const rule = TAX_RULES[mappedId];
+      return {
+        ruleId: null,
+        equivalentRuleId: mappedId,
+        legacyType,
+        label: `${rule.label} (via taxType "${legacyType}")`,
+        side,
+        sideMismatch: false,
+        reverseCharge: rule.reverseCharge,
+        allowedRates: rule.allowedRates,
+        usableInVouchers: rule.usableInVouchers,
+        unknown: false,
+      };
+    }
+    const fallback = LEGACY_FALLBACK[legacyType]!;
     return {
       ruleId: null,
+      equivalentRuleId: null,
       legacyType,
-      label: l.label,
-      reverseCharge: l.reverseCharge,
-      allowedRates: null,
+      label: fallback.label,
+      side,
+      sideMismatch: false,
+      reverseCharge: fallback.reverseCharge,
+      allowedRates: fallback.allowedRates,
+      usableInVouchers: true,
       unknown: false,
     };
   }
+
   return {
     ruleId: null,
+    equivalentRuleId: null,
     legacyType: null,
     label: "unbekannt",
+    side,
+    sideMismatch: false,
     reverseCharge: false,
     allowedRates: null,
+    usableInVouchers: true,
     unknown: true,
   };
 }

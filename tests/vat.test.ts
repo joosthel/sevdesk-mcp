@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
-  LEGACY_TAX_TYPES,
+  LEGACY_TAX_TYPE_RULES,
   TAX_RULES,
   looksForeign,
   num,
@@ -9,22 +9,62 @@ import {
   readTaxTreatment,
   round2,
   supplierKey,
+  voucherSide,
 } from "../src/lib/vat.js";
 import { parseReceiptFilename } from "../src/tools/audit.js";
 
 describe("tax rule reference", () => {
-  it("maps taxRule 5 to Reverse Charge §13b", () => {
-    expect(TAX_RULES["5"].label).toContain("Reverse Charge");
-    expect(TAX_RULES["5"].reverseCharge).toBe(true);
-    expect(TAX_RULES["5"].allowedRates).toEqual([0]);
+  it("classifies §13b reverse-charge rules on both sides", () => {
+    for (const id of ["5", "12", "13", "14"] as const) {
+      expect(TAX_RULES[id].reverseCharge).toBe(true);
+      expect(TAX_RULES[id].allowedRates).toEqual([0]);
+    }
+    expect(TAX_RULES["5"].side).toBe("revenue");
+    expect(TAX_RULES["12"].side).toBe("expense");
   });
 
-  it("keeps the legacy taxType mapping intact", () => {
+  it("does not treat intra-community supplies as reverse charge", () => {
+    expect(TAX_RULES["3"].reverseCharge).toBe(false);
+    expect(TAX_RULES["3"].allowedRates).toEqual([0, 7, 19]);
+  });
+
+  it("maps the deprecated taxTypes per the 2.0 spec", () => {
     expect(TAX_RULES["1"].legacyTaxType).toBe("default");
     expect(TAX_RULES["3"].legacyTaxType).toBe("eu");
-    expect(TAX_RULES["5"].legacyTaxType).toBe("noteu");
-    expect(LEGACY_TAX_TYPES.noteu?.reverseCharge).toBe(true);
-    expect(LEGACY_TAX_TYPES.default?.reverseCharge).toBe(false);
+    expect(TAX_RULES["17"].legacyTaxType).toBe("noteu");
+    expect(TAX_RULES["5"].legacyTaxType).toBeNull();
+    expect(LEGACY_TAX_TYPE_RULES.revenue.noteu).toBe("17");
+    expect(LEGACY_TAX_TYPE_RULES.expense.default).toBe("9");
+  });
+
+  it("covers the expense side", () => {
+    expect(TAX_RULES["8"].side).toBe("expense");
+    expect(TAX_RULES["9"].side).toBe("expense");
+    expect(TAX_RULES["9"].allowedRates).toEqual([0, 7, 19]);
+    expect(TAX_RULES["10"].allowedRates).toEqual([0]);
+  });
+
+  it("marks rules the API refuses on vouchers", () => {
+    for (const id of ["18", "19", "20", "21"] as const) {
+      expect(TAX_RULES[id].usableInVouchers).toBe(false);
+    }
+    expect(TAX_RULES["9"].usableInVouchers).toBe(true);
+  });
+});
+
+describe("voucherSide", () => {
+  it("reads creditDebit before anything else", () => {
+    expect(voucherSide({ creditDebit: "C" })).toBe("expense");
+    expect(voucherSide({ creditDebit: "D" })).toBe("revenue");
+  });
+
+  it("falls back to the tax rule's side", () => {
+    expect(voucherSide({ taxRule: { id: "9" } })).toBe("expense");
+    expect(voucherSide({ taxRule: { id: 1 } })).toBe("revenue");
+  });
+
+  it("returns null when it cannot tell", () => {
+    expect(voucherSide({})).toBeNull();
   });
 });
 
@@ -54,6 +94,39 @@ describe("readTaxTreatment", () => {
     const t = readTaxTreatment({ taxRule: { id: "1", objectName: "TaxRule" } });
     expect(t.reverseCharge).toBe(false);
     expect(t.allowedRates).toEqual([0, 7, 19]);
+  });
+
+  it("recognises expense-side reverse charge (taxRule 12)", () => {
+    const t = readTaxTreatment({ taxRule: { id: "12", objectName: "TaxRule" }, creditDebit: "C" });
+    expect(t.reverseCharge).toBe(true);
+    expect(t.side).toBe("expense");
+    expect(t.sideMismatch).toBe(false);
+  });
+
+  it("treats deductible expenses (taxRule 9) as plain domestic, tolerating numeric ids", () => {
+    const t = readTaxTreatment({ taxRule: { id: 9, objectName: "TaxRule" }, creditDebit: "C" });
+    expect(t.ruleId).toBe("9");
+    expect(t.reverseCharge).toBe(false);
+    expect(t.allowedRates).toEqual([0, 7, 19]);
+  });
+
+  it("flags a revenue rule sitting on an expense voucher", () => {
+    const t = readTaxTreatment({ taxRule: { id: "1", objectName: "TaxRule" }, creditDebit: "C" });
+    expect(t.sideMismatch).toBe(true);
+  });
+
+  it("resolves legacy taxType per voucher side", () => {
+    const expense = readTaxTreatment({ taxType: "noteu", creditDebit: "C" });
+    expect(expense.reverseCharge).toBe(true);
+
+    // On the revenue side, noteu maps to rule 17 — not taxable in Germany, no §13b base.
+    const revenue = readTaxTreatment({ taxType: "noteu", creditDebit: "D" });
+    expect(revenue.reverseCharge).toBe(false);
+    expect(revenue.equivalentRuleId).toBe("17");
+
+    const dflt = readTaxTreatment({ taxType: "default", creditDebit: "C" });
+    expect(dflt.equivalentRuleId).toBe("9");
+    expect(dflt.allowedRates).toEqual([0, 7, 19]);
   });
 });
 
