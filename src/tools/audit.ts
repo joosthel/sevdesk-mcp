@@ -326,11 +326,15 @@ const auditVat: ToolDef = {
             voucherId: id,
             voucher: label,
             detail: `Booked as ${bookedAs} but every position carries 0 % VAT` + hint,
-            suggestion:
-              "If this is a service from a supplier established abroad, it is Reverse Charge: " +
-              "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
-              "taxRule 13 (without input-tax deduction) — or taxRule 8 for intra-EU goods. " +
-              "Otherwise confirm the supplier really invoices without VAT.",
+            suggestion: ctx.config.kleinunternehmer
+              ? "If this is a service from a supplier established abroad, it is Reverse Charge: " +
+                "taxRule 13 (§13b ohne Vorsteuerabzug — as Kleinunternehmer you cannot deduct " +
+                "the input tax, so this VAT is actually payable). Domestic 0 % expenses belong " +
+                "on taxRule 10. Otherwise confirm the supplier really invoices without VAT."
+              : "If this is a service from a supplier established abroad, it is Reverse Charge: " +
+                "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
+                "taxRule 13 (without input-tax deduction) — or taxRule 8 for intra-EU goods. " +
+                "Otherwise confirm the supplier really invoices without VAT.",
           });
         } else if (side === "revenue" && effectiveRule === "1") {
           findings.push({
@@ -608,6 +612,10 @@ const reverseChargeReport: ToolDef = {
         wouldAddVat: round2((suspectedBase * rate) / 100),
         note:
           "These are booked as plain expenses with 0 % VAT and have a foreign-looking supplier. " +
+          (ctx.config.kleinunternehmer
+            ? "As Kleinunternehmer the correct rule is 13 (§13b ohne Vorsteuerabzug) — that VAT " +
+              "would actually be payable. "
+            : "") +
           "Verify each one — the heuristic reads company suffixes, it does not know where a " +
           "supplier is established.",
         vouchers: suspected,

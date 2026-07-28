@@ -7,6 +7,8 @@ export interface Config {
   readOnly: boolean;
   /** When true, mutating operations describe what they would send instead of sending it. */
   dryRun: boolean;
+  /** §19 UStG small-business scheme: audit suggestions point to the KU rule set (13/10/11). */
+  kleinunternehmer: boolean;
   requestTimeoutMs: number;
   maxRetries: number;
   /** Directories the audit tools are allowed to read receipt files from. */
@@ -38,6 +40,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     baseUrl: (env.SEVDESK_BASE_URL ?? "https://my.sevdesk.de/api/v1").replace(/\/+$/, ""),
     readOnly: bool(env.SEVDESK_READ_ONLY, false),
     dryRun: bool(env.SEVDESK_DRY_RUN, false),
+    kleinunternehmer: bool(env.SEVDESK_KLEINUNTERNEHMER, false),
     requestTimeoutMs: int(env.SEVDESK_TIMEOUT_MS, 30_000),
     maxRetries: int(env.SEVDESK_MAX_RETRIES, 3),
     allowedReceiptDirs: (env.SEVDESK_RECEIPT_DIRS ?? "")

@@ -22,7 +22,7 @@ interface StubData {
  * Minimal stand-in for SevdeskClient, routing by path: voucher sweeps,
  * position fetches, contact and guidance lookups, transactions.
  */
-function stubCtx(d: StubData): ToolContext {
+function stubCtx(d: StubData, config: Record<string, unknown> = {}): ToolContext {
   const client = {
     async getAll(path: string): Promise<Row[]> {
       if (path === "/Voucher") return d.vouchers ?? [];
@@ -42,7 +42,7 @@ function stubCtx(d: StubData): ToolContext {
       return { status: 200, data: {} };
     },
   };
-  return { client, config: { allowedReceiptDirs: [] } } as unknown as ToolContext;
+  return { client, config: { allowedReceiptDirs: [], ...config } } as unknown as ToolContext;
 }
 
 function voucher(overrides: Row): Row {
@@ -138,6 +138,24 @@ describe("sevdesk_audit_vat", () => {
     });
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("6");
+  });
+
+  it("tailors the reverse-charge suggestion for Kleinunternehmer", async () => {
+    const ctx = stubCtx(
+      {
+        vouchers: [voucher({ id: "20", taxRule: { id: "9" }, supplierName: "Northwind Cloud, PBC" })],
+        positionsByVoucher: { "20": [{ taxRate: 0 }] },
+      },
+      { kleinunternehmer: true },
+    );
+    const result = (await auditVat.handler({}, ctx)) as AuditResult & {
+      findings: Array<{ code: string; suggestion: string }>;
+    };
+    const f = result.findings.find((x) => x.code === "zero_rate_booked_as_domestic");
+    expect(f).toBeDefined();
+    expect(f!.suggestion).toContain("taxRule 13");
+    expect(f!.suggestion).toContain("Kleinunternehmer");
+    expect(f!.suggestion).not.toContain("taxRule 12");
   });
 
   it("raises severity when the supplier's contact country is foreign", async () => {

@@ -1,5 +1,5 @@
-import { readFile, stat } from "node:fs/promises";
-import { basename, isAbsolute, resolve, sep } from "node:path";
+import { readFile, stat, writeFile } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 
 import { ReadOnlyError } from "../config.js";
 import {
@@ -649,6 +649,196 @@ const setTaxRule: ToolDef = {
   },
 };
 
+/* ------------------------------------------------------------------ */
+
+const createInvoice: ToolDef = {
+  name: "sevdesk_create_invoice",
+  title: "Create a draft invoice",
+  description:
+    "Create an outgoing invoice as a draft (status 50) — always a draft, so nothing reaches a " +
+    "customer without review in sevDesk. Positions carry name, quantity, price and tax rate; " +
+    "the contact's address is filled in automatically. Honors SEVDESK_DRY_RUN.",
+  mutating: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      contactId: str("Numeric id of the customer contact."),
+      positions: {
+        type: "array",
+        description: "Invoice line items.",
+        items: {
+          type: "object",
+          properties: {
+            name: str("Position text."),
+            quantity: { type: "number", description: "Quantity (default 1)." },
+            price: { type: "number", description: "Unit price (net)." },
+            taxRate: { type: "number", description: "VAT rate; defaults to 19, or 0 for Kleinunternehmer." },
+          },
+          required: ["name", "price"],
+          additionalProperties: false,
+        },
+      },
+      invoiceDate: str("Invoice date, yyyy-mm-dd (default today)."),
+      header: str("Optional invoice header text."),
+      taxRuleId: str("Revenue tax rule id (default 1, or 11 for Kleinunternehmer).", {
+        enum: ["1", "2", "3", "4", "5", "11", "17"],
+      }),
+      currency: str("Currency (default EUR)."),
+    },
+    required: ["contactId", "positions"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const contactId = requireString(args, "contactId");
+    const positions = Array.isArray(args.positions) ? (args.positions as Row[]) : [];
+    if (positions.length === 0) throw new Error("At least one position is required.");
+
+    const ruleId =
+      optString(args, "taxRuleId") ?? (ctx.config.kleinunternehmer ? "11" : "1");
+    const defaultRate = ctx.config.kleinunternehmer ? 0 : 19;
+    const date = optString(args, "invoiceDate") ?? ymd(new Date());
+
+    const body = {
+      invoice: {
+        objectName: "Invoice",
+        mapAll: true,
+        invoiceDate: date,
+        // Always a draft: review happens in sevDesk, never silently.
+        status: "50",
+        invoiceType: "RE",
+        currency: optString(args, "currency") ?? "EUR",
+        contact: { id: Number(contactId), objectName: "Contact" },
+        taxRule: { id: ruleId, objectName: "TaxRule" },
+        discount: 0,
+        ...(optString(args, "header") ? { header: optString(args, "header") } : {}),
+      },
+      invoicePosSave: positions.map((p) => ({
+        objectName: "InvoicePos",
+        mapAll: true,
+        name: String(p.name ?? ""),
+        quantity: num(p.quantity) || 1,
+        price: num(p.price),
+        taxRate: p.taxRate === undefined ? defaultRate : num(p.taxRate),
+        unity: { id: 1, objectName: "Unity" },
+      })),
+      invoicePosDelete: null,
+    };
+
+    if (ctx.config.dryRun) {
+      return { dryRun: true, wouldSend: { method: "POST", path: "/Invoice/Factory/saveInvoice", body } };
+    }
+
+    const { data } = await ctx.client.request<{ objects?: { invoice?: Row } }>({
+      method: "POST",
+      path: "/Invoice/Factory/saveInvoice",
+      body,
+      mutating: true,
+    });
+    const created = data?.objects?.invoice;
+    return {
+      invoiceId: String(created?.id ?? ""),
+      invoiceNumber: created?.invoiceNumber ?? null,
+      status: "Entwurf (draft)",
+      note: "Review the draft in sevDesk before sending it to the customer.",
+    };
+  },
+};
+
+const getInvoicePdf: ToolDef = {
+  name: "sevdesk_get_invoice_pdf",
+  title: "Save an invoice PDF",
+  description:
+    "Fetch the rendered PDF of an invoice and save it into a directory from the " +
+    "SEVDESK_RECEIPT_DIRS allowlist. Never changes the invoice's send state " +
+    "(preventSendBy). Read-only towards sevDesk.",
+  mutating: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      invoiceId: str("Numeric invoice id."),
+      directory: str("Absolute path of an allowlisted directory to save the PDF into."),
+    },
+    required: ["invoiceId", "directory"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const id = requireString(args, "invoiceId");
+    const dir = assertAllowedPath(ctx, requireString(args, "directory"));
+
+    const { data } = await ctx.client.request<{
+      objects?: { filename?: unknown; content?: unknown; base64Encoded?: unknown };
+    }>({
+      method: "GET",
+      path: `/Invoice/${encodeURIComponent(id)}/getPdf`,
+      query: { preventSendBy: true, download: true },
+    });
+
+    const content = data?.objects?.content;
+    if (typeof content !== "string" || content.length === 0) {
+      throw new Error(`sevDesk returned no PDF content for invoice ${id}.`);
+    }
+    // The filename comes from the API — keep only its basename so it cannot
+    // point outside the allowlisted directory.
+    const filename = basename(String(data?.objects?.filename ?? `invoice-${id}.pdf`));
+    const target = join(dir, filename);
+    const bytes = Buffer.from(content, "base64");
+    await writeFile(target, bytes);
+    return { saved: target, bytes: bytes.length };
+  },
+};
+
+const markInvoiceSent: ToolDef = {
+  name: "sevdesk_mark_invoice_sent",
+  title: "Mark an invoice as sent",
+  description:
+    "Mark an invoice as sent without emailing anything (send types: PDF download, print, " +
+    "postal — deliberately no email). Refuses enshrined invoices and verifies the result. " +
+    "Honors SEVDESK_DRY_RUN.",
+  mutating: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      invoiceId: str("Numeric invoice id."),
+      sendType: str("How the invoice left the house (default VPDF).", {
+        enum: ["VPDF", "VPR", "VP"],
+      }),
+    },
+    required: ["invoiceId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const id = requireString(args, "invoiceId");
+    const sendType = optString(args, "sendType") ?? "VPDF";
+
+    const { data } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/Invoice/${encodeURIComponent(id)}`,
+    });
+    const invoice = data?.objects?.[0];
+    if (!invoice) throw new Error(`No invoice with id ${id}.`);
+    if (invoice.enshrined) {
+      throw new Error(`Invoice ${id} is enshrined (festgeschrieben) — sevDesk forbids changing it.`);
+    }
+
+    const body = { sendType, sendDraft: false };
+    if (ctx.config.dryRun) {
+      return { dryRun: true, wouldSend: { method: "PUT", path: `/Invoice/${id}/sendBy`, body } };
+    }
+
+    const { data: updated } = await ctx.client.request<{ objects?: Row }>({
+      method: "PUT",
+      path: `/Invoice/${encodeURIComponent(id)}/sendBy`,
+      body,
+      mutating: true,
+    });
+    return {
+      invoiceId: id,
+      sendType,
+      verified: (updated?.objects as Row | undefined)?.sendType === sendType,
+    };
+  },
+};
+
 export const resourceTools: ToolDef[] = [
   ping,
   listVouchers,
@@ -660,4 +850,7 @@ export const resourceTools: ToolDef[] = [
   createVoucher,
   receiptGuidance,
   setTaxRule,
+  createInvoice,
+  getInvoicePdf,
+  markInvoiceSent,
 ];

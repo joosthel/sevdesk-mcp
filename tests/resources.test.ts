@@ -1,3 +1,7 @@
+import { mkdtemp, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
 import { describe, expect, it } from "vitest";
 
 import type { ToolContext } from "../src/lib/tool.js";
@@ -6,6 +10,9 @@ import { resourceTools } from "../src/tools/resources.js";
 const ping = resourceTools.find((t) => t.name === "sevdesk_ping")!;
 const setTaxRule = resourceTools.find((t) => t.name === "sevdesk_set_tax_rule")!;
 const receiptGuidance = resourceTools.find((t) => t.name === "sevdesk_receipt_guidance")!;
+const createInvoice = resourceTools.find((t) => t.name === "sevdesk_create_invoice")!;
+const getInvoicePdf = resourceTools.find((t) => t.name === "sevdesk_get_invoice_pdf")!;
+const markInvoiceSent = resourceTools.find((t) => t.name === "sevdesk_mark_invoice_sent")!;
 
 type Row = Record<string, unknown>;
 
@@ -191,5 +198,150 @@ describe("sevdesk_receipt_guidance", () => {
     };
     expect(result.accounts).toHaveLength(1);
     expect(result.accounts[0]!.accountNumber).toBe("6837");
+  });
+});
+
+/** Stub for the invoice tools: records writes, serves one invoice and a PDF. */
+function invoiceCtx(
+  invoice: Row | null,
+  config: Record<string, unknown> = {},
+) {
+  const sent: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
+  const client = {
+    async request(req: {
+      method: string;
+      path: string;
+      body?: unknown;
+      query?: Record<string, unknown>;
+    }) {
+      if (req.method === "POST" && req.path === "/Invoice/Factory/saveInvoice") {
+        sent.push(req);
+        return {
+          status: 201,
+          data: { objects: { invoice: { id: "900", invoiceNumber: "RE-1001", status: "50" } } },
+        };
+      }
+      if (req.method === "PUT" && req.path.endsWith("/sendBy")) {
+        sent.push(req);
+        if (invoice) invoice.sendType = (req.body as Row).sendType;
+        return { status: 200, data: { objects: invoice } };
+      }
+      if (req.path.endsWith("/getPdf")) {
+        sent.push(req);
+        return {
+          status: 200,
+          data: {
+            objects: {
+              filename: "RE-1001.pdf",
+              content: Buffer.from("PDF-BYTES").toString("base64"),
+            },
+          },
+        };
+      }
+      if (req.path.startsWith("/Invoice/")) {
+        return { status: 200, data: { objects: invoice ? [invoice] : [] } };
+      }
+      return { status: 200, data: {} };
+    },
+  };
+  const ctx = {
+    client,
+    config: {
+      readOnly: false,
+      dryRun: false,
+      kleinunternehmer: false,
+      allowedReceiptDirs: [],
+      ...config,
+    },
+  } as unknown as ToolContext;
+  return { ctx, sent };
+}
+
+describe("sevdesk_create_invoice", () => {
+  const args = {
+    contactId: "77",
+    positions: [{ name: "Consulting", quantity: 2, price: 100, taxRate: 19 }],
+  };
+
+  it("always creates drafts, with the domestic revenue rule by default", async () => {
+    const { ctx, sent } = invoiceCtx(null);
+    const result = (await createInvoice.handler(args, ctx)) as {
+      invoiceId: string;
+      status: string;
+    };
+    expect(sent).toHaveLength(1);
+    const body = sent[0]!.body as {
+      invoice: { status: string; taxRule: { id: string }; contact: { id: number } };
+      invoicePosSave: Array<{ name: string; taxRate: number }>;
+    };
+    expect(body.invoice.status).toBe("50");
+    expect(body.invoice.taxRule.id).toBe("1");
+    expect(body.invoice.contact.id).toBe(77);
+    expect(body.invoicePosSave[0]!.name).toBe("Consulting");
+    expect(result.invoiceId).toBe("900");
+  });
+
+  it("uses the §19 rule for Kleinunternehmer", async () => {
+    const { ctx, sent } = invoiceCtx(null, { kleinunternehmer: true });
+    await createInvoice.handler(
+      { contactId: "77", positions: [{ name: "Consulting", price: 100 }] },
+      ctx,
+    );
+    const body = sent[0]!.body as {
+      invoice: { taxRule: { id: string } };
+      invoicePosSave: Array<{ taxRate: number }>;
+    };
+    expect(body.invoice.taxRule.id).toBe("11");
+    expect(body.invoicePosSave[0]!.taxRate).toBe(0);
+  });
+
+  it("previews with dryRun instead of sending", async () => {
+    const { ctx, sent } = invoiceCtx(null, { dryRun: true });
+    const result = (await createInvoice.handler(args, ctx)) as { dryRun: boolean };
+    expect(result.dryRun).toBe(true);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("sevdesk_get_invoice_pdf", () => {
+  it("saves the PDF into an allowlisted directory without touching send state", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sevdesk-mcp-test-"));
+    const { ctx, sent } = invoiceCtx(null, { allowedReceiptDirs: [dir] });
+    const result = (await getInvoicePdf.handler({ invoiceId: "900", directory: dir }, ctx)) as {
+      saved: string;
+    };
+    expect(result.saved).toBe(join(dir, "RE-1001.pdf"));
+    expect(String(await readFile(result.saved))).toBe("PDF-BYTES");
+    const pdfCall = sent.find((c) => c.path.endsWith("/getPdf"))!;
+    expect((pdfCall.query as Row).preventSendBy).toBe(true);
+  });
+
+  it("refuses without a directory allowlist", async () => {
+    const { ctx } = invoiceCtx(null);
+    await expect(
+      getInvoicePdf.handler({ invoiceId: "900", directory: "/tmp/x" }, ctx),
+    ).rejects.toThrow(/SEVDESK_RECEIPT_DIRS/);
+  });
+});
+
+describe("sevdesk_mark_invoice_sent", () => {
+  it("marks a non-enshrined invoice as sent by PDF and verifies", async () => {
+    const invoice: Row = { id: "900", status: "100", enshrined: null, sendType: null };
+    const { ctx, sent } = invoiceCtx(invoice);
+    const result = (await markInvoiceSent.handler({ invoiceId: "900" }, ctx)) as {
+      verified: boolean;
+    };
+    const put = sent.find((c) => c.path.endsWith("/sendBy"))!;
+    expect((put.body as Row).sendType).toBe("VPDF");
+    expect(result.verified).toBe(true);
+  });
+
+  it("refuses enshrined invoices", async () => {
+    const invoice: Row = { id: "900", enshrined: "2026-01-01", sendType: null };
+    const { ctx, sent } = invoiceCtx(invoice);
+    await expect(markInvoiceSent.handler({ invoiceId: "900" }, ctx)).rejects.toThrow(
+      /enshrined|festgeschrieben/i,
+    );
+    expect(sent.filter((c) => c.method === "PUT")).toEqual([]);
   });
 });
