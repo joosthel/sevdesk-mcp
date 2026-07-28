@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.4.0 — 2026-07-28
+
+- Three guarded invoice tools: `sevdesk_create_invoice` (always drafts,
+  Kleinunternehmer-aware defaults), `sevdesk_get_invoice_pdf` (never touches
+  the send state, never overwrites files), `sevdesk_mark_invoice_sent`
+  (non-email send types only, verifies by re-read). Deliberately no
+  email-send tool.
+- `SEVDESK_KLEINUNTERNEHMER`: audit suggestions and invoice defaults follow
+  the §19 rule set.
+- Consistency pass across the write layer: every write tool accepts a
+  per-call `dryRun` with a uniform `wouldSend` preview; the read-only gate
+  moved into the server dispatcher (three enforcement layers now); the
+  receipt-dir allowlist has a single implementation.
+- Docs: README restructured (English + German), CONTRIBUTING.md, sample
+  audit output.
+- Distribution: published to npm (`npx sevdesk-mcp`), listed in the official
+  MCP registry, MCPB one-click bundle for Claude Desktop attached to
+  releases.
+
 ## 0.3.1 — 2026-07-28
 
 - README restructured around step-by-step setup instructions (Claude Code,
