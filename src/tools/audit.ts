@@ -1,5 +1,5 @@
 import { readdir, stat } from "node:fs/promises";
-import { basename, extname, isAbsolute, resolve, sep } from "node:path";
+import { basename, extname, resolve } from "node:path";
 
 import {
   TAX_RULES,
@@ -15,7 +15,18 @@ import {
   voucherSide,
   ymd,
 } from "../lib/vat.js";
-import { bool, int, optBool, optNumber, optString, str, type ToolContext, type ToolDef } from "../lib/tool.js";
+import {
+  assertAllowedPath,
+  bool,
+  int,
+  optBool,
+  optNumber,
+  optString,
+  requireString,
+  str,
+  type ToolContext,
+  type ToolDef,
+} from "../lib/tool.js";
 
 /* ------------------------------------------------------------------ */
 /* shared helpers                                                      */
@@ -57,6 +68,19 @@ function inPeriod(date: Date | null, period: PeriodArgs): boolean {
   if (period.from && date < period.from) return false;
   if (period.to && date > period.to) return false;
   return true;
+}
+
+function periodLabel(period: PeriodArgs): { from: string; to: string } {
+  return {
+    from: period.from ? ymd(period.from) : "beginning",
+    to: period.to ? ymd(period.to) : "today",
+  };
+}
+
+const DAY_MS = 86_400_000;
+
+function dayDiff(a: Date | null, b: Date | null): number {
+  return a && b ? Math.abs(a.getTime() - b.getTime()) / DAY_MS : Number.POSITIVE_INFINITY;
 }
 
 async function fetchVouchers(ctx: ToolContext, period: PeriodArgs, maxItems: number): Promise<Row[]> {
@@ -145,8 +169,10 @@ async function fetchGuidance(
     const paths: string[] = [];
     if (sides.has("expense")) paths.push("/ReceiptGuidance/forExpense");
     if (sides.has("revenue")) paths.push("/ReceiptGuidance/forRevenue");
-    for (const path of paths) {
-      const { data } = await ctx.client.request<{ objects?: Row[] }>({ method: "GET", path });
+    const responses = await Promise.all(
+      paths.map((path) => ctx.client.request<{ objects?: Row[] }>({ method: "GET", path })),
+    );
+    for (const { data } of responses) {
       for (const o of data?.objects ?? []) {
         const id = String(o.accountDatevId ?? "");
         if (!id) continue;
@@ -223,21 +249,23 @@ const auditVat: ToolDef = {
     const period = readPeriod(args);
     const withPositions = optBool(args, "includePositions") ?? true;
     const vouchers = await fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000);
-    const { positions, warnings } = withPositions
-      ? await fetchPositions(ctx, vouchers)
-      : { positions: new Map<string, Row[]>(), warnings: [] };
-
-    const { countries, warnings: contactWarnings } = await fetchSupplierCountries(ctx);
-    warnings.push(...contactWarnings);
-
     const sides = new Set<VoucherSide>(vouchers.map((v) => voucherSide(v) ?? "expense"));
-    const guidance = withPositions
-      ? await fetchGuidance(ctx, sides)
-      : { byAccountId: null, warnings: [] };
-    warnings.push(...guidance.warnings);
+
+    // Positions, contacts and guidance depend only on the voucher list — fetch
+    // them concurrently. Without positions there are no rate-based findings,
+    // so the contact and guidance lookups are skipped entirely.
+    const details = withPositions && vouchers.length > 0;
+    const [posResult, contactResult, guidance] = await Promise.all([
+      details ? fetchPositions(ctx, vouchers) : { positions: new Map<string, Row[]>(), warnings: [] },
+      details ? fetchSupplierCountries(ctx) : { countries: new Map<string, string>(), warnings: [] },
+      details ? fetchGuidance(ctx, sides) : { byAccountId: null, warnings: [] },
+    ]);
+    const { positions } = posResult;
+    const { countries } = contactResult;
+    const warnings = [...posResult.warnings, ...contactResult.warnings, ...guidance.warnings];
 
     const findings: Finding[] = [];
-    const bySupplier = new Map<string, { rules: Set<string>; rates: Set<number>; names: Set<string> }>();
+    const bySupplier = new Map<string, { rules: Set<string>; names: Set<string> }>();
 
     for (const v of vouchers) {
       const id = String(v.id ?? "");
@@ -250,9 +278,8 @@ const auditVat: ToolDef = {
       // group for the cross-voucher consistency check
       const key = supplierKey(name);
       if (key) {
-        const entry = bySupplier.get(key) ?? { rules: new Set(), rates: new Set(), names: new Set() };
-        entry.rules.add(tax.ruleId ?? tax.legacyType ?? "unknown");
-        rates.forEach((r) => entry.rates.add(r));
+        const entry = bySupplier.get(key) ?? { rules: new Set(), names: new Set() };
+        entry.rules.add(tax.effectiveRuleId ?? tax.legacyType ?? "unknown");
         entry.names.add(name);
         bySupplier.set(key, entry);
       }
@@ -304,7 +331,7 @@ const auditVat: ToolDef = {
       // /Voucher documents without creditDebit are treated as expenses — that
       // is what vouchers overwhelmingly are.
       const allZero = rates.length > 0 && rates.every((r) => r === 0);
-      const effectiveRule = tax.ruleId ?? tax.equivalentRuleId;
+      const effectiveRule = tax.effectiveRuleId;
       const side = tax.side ?? "expense";
       if (allZero && !tax.reverseCharge && !tax.sideMismatch && !tax.unknown) {
         const cls = classifyForeign(name, countries);
@@ -471,10 +498,7 @@ const auditVat: ToolDef = {
     }, {});
 
     return {
-      period: {
-        from: period.from ? ymd(period.from) : "beginning",
-        to: period.to ? ymd(period.to) : "today",
-      },
+      period: periodLabel(period),
       vouchersExamined: vouchers.length,
       positionsFetched: withPositions,
       warnings,
@@ -528,8 +552,10 @@ const reverseChargeReport: ToolDef = {
   async handler(args, ctx) {
     const period = readPeriod(args);
     const rate = optNumber(args, "rate") ?? 19;
-    const vouchers = await fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000);
-    const { countries, warnings } = await fetchSupplierCountries(ctx);
+    const [vouchers, { countries, warnings }] = await Promise.all([
+      fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000),
+      fetchSupplierCountries(ctx),
+    ]);
 
     const deductible: Row[] = [];
     const nonDeductible: Row[] = [];
@@ -541,10 +567,10 @@ const reverseChargeReport: ToolDef = {
       const tax = readTaxTreatment(v);
       const gross = round2(num(v.sumGross));
       const name = String(v.supplierName ?? (v.supplier as Row | undefined)?.name ?? "");
-      const effective = tax.ruleId ?? tax.equivalentRuleId;
-      const row: Row = { voucher: voucherLabel(v), rule: tax.label, gross };
+      const effective = tax.effectiveRuleId;
 
       if (tax.reverseCharge) {
+        const row: Row = { voucher: voucherLabel(v), rule: tax.label, gross };
         if (effective === "12" || effective === "14") deductible.push(row);
         else if (effective === "13") nonDeductible.push(row);
         else if (effective === "5" || effective === "21") ownRevenue.push(row);
@@ -566,10 +592,7 @@ const reverseChargeReport: ToolDef = {
     const suspectedBase = sum(suspected);
 
     return {
-      period: {
-        from: period.from ? ymd(period.from) : "beginning",
-        to: period.to ? ymd(period.to) : "today",
-      },
+      period: periodLabel(period),
       rateApplied: rate,
       warnings,
       reverseChargeExpenses: {
@@ -682,7 +705,7 @@ const findDuplicates: ToolDef = {
         const da = parseSevdeskDate(a.voucherDate);
         const db = parseSevdeskDate(b.voucherDate);
         if (!da || !db) continue;
-        const days = Math.abs(da.getTime() - db.getTime()) / 86_400_000;
+        const days = dayDiff(da, db);
         if (days > dayWindow) continue;
         const key = [a.id, b.id].sort().join("|");
         if (seen.has(key)) continue;
@@ -790,10 +813,7 @@ const subscriptionGaps: ToolDef = {
     results.sort((a, b) => num(b.estimatedMissingValue) - num(a.estimatedMissingValue));
 
     return {
-      period: {
-        from: period.from ? ymd(period.from) : "beginning",
-        to: period.to ? ymd(period.to) : "today",
-      },
+      period: periodLabel(period),
       monthsCovered: allMonths,
       recurringSuppliersWithGaps: results.length,
       estimatedTotalMissing: round2(results.reduce((s, r) => s + num(r.estimatedMissingValue), 0)),
@@ -869,23 +889,7 @@ const diffReceiptFolder: ToolDef = {
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    const dir = optString(args, "directory");
-    if (!dir || !isAbsolute(dir)) throw new Error("`directory` must be an absolute path.");
-    const target = resolve(dir);
-
-    const allow = ctx.config.allowedReceiptDirs;
-    if (allow.length === 0) {
-      throw new Error(
-        "Refused: filesystem access is disabled by default. Set SEVDESK_RECEIPT_DIRS to a " +
-          "colon-separated allowlist of directories to enable the receipt file tools.",
-      );
-    }
-    const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
-    if (!ok) {
-      throw new Error(
-        `Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`,
-      );
-    }
+    const target = assertAllowedPath(ctx, requireString(args, "directory"));
 
     const info = await stat(target).catch(() => null);
     if (!info?.isDirectory()) throw new Error(`Not a directory: ${target}`);
@@ -912,7 +916,7 @@ const diffReceiptFolder: ToolDef = {
 
     const parsed = files.map((f) => parseReceiptFilename(f));
     const period = readPeriod(args);
-    const tolerance = (optNumber(args, "dayTolerance") ?? 5) * 86_400_000;
+    const tolerance = (optNumber(args, "dayTolerance") ?? 5) * DAY_MS;
     const vouchers = await fetchVouchers(ctx, period, 2000);
 
     const matchedVoucherIds = new Set<string>();
@@ -1020,22 +1024,16 @@ const reconcileTransactions: ToolDef = {
       used: false,
     }));
 
-    const dayDiff = (a: Date | null, b: Date | null): number =>
-      a && b ? Math.abs(a.getTime() - b.getTime()) / 86_400_000 : Number.POSITIVE_INFINITY;
-
     let matched = 0;
     const unmatchedTransactions: Row[] = [];
     for (const t of txs) {
       const amount = num(t.amount);
+      const want = round2(Math.abs(amount));
       const wantSide = amount < 0 ? "expense" : "revenue";
       const txDate = parseSevdeskDate(t.valueDate);
       const hit = candidates
         .filter(
-          (c) =>
-            !c.used &&
-            c.side === wantSide &&
-            c.gross === round2(Math.abs(amount)) &&
-            dayDiff(c.date, txDate) <= window,
+          (c) => !c.used && c.side === wantSide && c.gross === want && dayDiff(c.date, txDate) <= window,
         )
         .sort((a, b) => dayDiff(a.date, txDate) - dayDiff(b.date, txDate))[0];
       if (hit) {
@@ -1061,10 +1059,7 @@ const reconcileTransactions: ToolDef = {
       }));
 
     return {
-      period: {
-        from: period.from ? ymd(period.from) : "beginning",
-        to: period.to ? ymd(period.to) : "today",
-      },
+      period: periodLabel(period),
       transactionsExamined: txs.length,
       vouchersExamined: vouchers.length,
       matched,

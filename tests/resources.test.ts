@@ -274,11 +274,28 @@ describe("sevdesk_create_invoice", () => {
       invoice: { status: string; taxRule: { id: string }; contact: { id: number } };
       invoicePosSave: Array<{ name: string; taxRate: number }>;
     };
-    expect(body.invoice.status).toBe("50");
+    // Invoice draft status is 100 — 50 means "deactivated recurring invoice" for invoices.
+    expect(body.invoice.status).toBe("100");
     expect(body.invoice.taxRule.id).toBe("1");
     expect(body.invoice.contact.id).toBe(77);
     expect(body.invoicePosSave[0]!.name).toBe("Consulting");
     expect(result.invoiceId).toBe("900");
+  });
+
+  it("rejects unparseable position values instead of coercing them", async () => {
+    const { ctx } = invoiceCtx(null);
+    await expect(
+      createInvoice.handler(
+        { contactId: "77", positions: [{ name: "X", price: 100, taxRate: null }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/taxRate/);
+    await expect(
+      createInvoice.handler(
+        { contactId: "77", positions: [{ name: "X", price: 100, quantity: 0 }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/quantity/);
   });
 
   it("uses the §19 rule for Kleinunternehmer", async () => {
@@ -321,6 +338,15 @@ describe("sevdesk_get_invoice_pdf", () => {
     await expect(
       getInvoicePdf.handler({ invoiceId: "900", directory: "/tmp/x" }, ctx),
     ).rejects.toThrow(/SEVDESK_RECEIPT_DIRS/);
+  });
+
+  it("never overwrites an existing file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "sevdesk-mcp-test-"));
+    const { ctx } = invoiceCtx(null, { allowedReceiptDirs: [dir] });
+    await getInvoicePdf.handler({ invoiceId: "900", directory: dir }, ctx);
+    await expect(getInvoicePdf.handler({ invoiceId: "900", directory: dir }, ctx)).rejects.toThrow(
+      /exists/i,
+    );
   });
 });
 

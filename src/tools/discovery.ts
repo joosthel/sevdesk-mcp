@@ -7,7 +7,7 @@ import {
 } from "../catalog.js";
 import { SevdeskClient } from "../client.js";
 import { ReadOnlyError } from "../config.js";
-import { bool, obj, optNumber, optString, requireString, str, type ToolDef } from "../lib/tool.js";
+import { bool, isDryRun, obj, optNumber, optString, requireString, str, type ToolDef } from "../lib/tool.js";
 
 /**
  * Three tools that together expose the *entire* sevDesk API.
@@ -101,6 +101,7 @@ const callOperation: ToolDef = {
     "the server runs with SEVDESK_READ_ONLY=true, and are only described (not sent) when " +
     "SEVDESK_DRY_RUN=true or `dryRun` is passed.",
   mutating: true, // conservatively declared; the handler checks per operation
+  listInReadOnly: true, // covers reads too — writes are refused per call below
   inputSchema: {
     type: "object",
     properties: {
@@ -146,8 +147,7 @@ const callOperation: ToolDef = {
       if (!pathParamNames.has(k)) query[k] = v;
     }
 
-    const dryRun = args.dryRun === true || ctx.config.dryRun;
-    if (dryRun && op.mutating) {
+    if (isDryRun(args, ctx) && op.mutating) {
       return {
         dryRun: true,
         wouldSend: {

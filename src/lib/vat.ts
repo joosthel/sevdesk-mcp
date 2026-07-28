@@ -23,8 +23,6 @@ export interface TaxRule {
   legacyTaxType: string | null;
   /** The API rejects some revenue rules on vouchers (One Stop Shop, §18b). */
   usableInVouchers: boolean;
-  /** Part of the Kleinunternehmer (§19 UStG) rule set. */
-  kleinunternehmer: boolean;
 }
 
 export const TAX_RULES = {
@@ -36,7 +34,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "default",
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "2": {
     label: "Ausfuhren",
@@ -45,7 +42,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "3": {
     label: "Innergemeinschaftliche Lieferungen",
@@ -54,7 +50,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "eu",
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "4": {
     label: "Steuerfreie Umsätze §4 UStG",
@@ -63,7 +58,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "5": {
     label: "Reverse Charge gem. §13b UStG (Feld 60)",
@@ -72,7 +66,6 @@ export const TAX_RULES = {
     reverseCharge: true,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "11": {
     label: "Steuer nicht erhoben nach §19 UStG (Kleinunternehmer)",
@@ -81,7 +74,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "ss",
     usableInVouchers: true,
-    kleinunternehmer: true,
   },
   "17": {
     label: "Nicht im Inland steuerbare Leistung",
@@ -90,7 +82,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "noteu",
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "18": {
     label: "One Stop Shop (goods)",
@@ -99,7 +90,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: false,
-    kleinunternehmer: false,
   },
   "19": {
     label: "One Stop Shop (electronic service)",
@@ -108,7 +98,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: false,
-    kleinunternehmer: false,
   },
   "20": {
     label: "One Stop Shop (other service)",
@@ -117,7 +106,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: false,
-    kleinunternehmer: false,
   },
   "21": {
     label: "Reverse Charge gem. §18b UStG (Feld 21)",
@@ -126,7 +114,6 @@ export const TAX_RULES = {
     reverseCharge: true,
     legacyTaxType: null,
     usableInVouchers: false,
-    kleinunternehmer: false,
   },
   // Expense (incoming vouchers, credit side)
   "8": {
@@ -136,7 +123,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "9": {
     label: "Vorsteuerabziehbare Aufwendungen",
@@ -145,7 +131,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "default",
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "10": {
     label: "Nicht vorsteuerabziehbare Aufwendungen",
@@ -154,7 +139,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: "ss",
     usableInVouchers: true,
-    kleinunternehmer: true,
   },
   "12": {
     label: "Reverse Charge gem. §13b Abs. 2 UStG mit Vorsteuerabzug",
@@ -163,7 +147,6 @@ export const TAX_RULES = {
     reverseCharge: true,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "13": {
     label: "Reverse Charge gem. §13b UStG ohne Vorsteuerabzug",
@@ -172,7 +155,6 @@ export const TAX_RULES = {
     reverseCharge: true,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: true,
   },
   "14": {
     label: "Reverse Charge gem. §13b Abs. 1 EU Umsätze",
@@ -181,7 +163,6 @@ export const TAX_RULES = {
     reverseCharge: true,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   // Not in the spec's documentation tables, but returned by the live
   // ReceiptGuidance endpoints (e.g. Privatentnahmen, durchlaufende Posten).
@@ -192,7 +173,6 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
   "22": {
     label: "Nicht steuerbar (Einnahme)",
@@ -201,17 +181,19 @@ export const TAX_RULES = {
     reverseCharge: false,
     legacyTaxType: null,
     usableInVouchers: true,
-    kleinunternehmer: false,
   },
 } as const satisfies Record<string, TaxRule>;
 
 export type TaxRuleId = keyof typeof TAX_RULES;
 
-/** Deprecated taxType → modern rule id, per side, as the 2.0 spec maps them. */
-export const LEGACY_TAX_TYPE_RULES: Record<VoucherSide, Record<string, TaxRuleId>> = {
-  revenue: { default: "1", eu: "3", noteu: "17", ss: "11" },
-  expense: { default: "9", ss: "10" },
-};
+/** Deprecated taxType → modern rule id, per side — derived from TAX_RULES so it cannot drift. */
+export const LEGACY_TAX_TYPE_RULES: Record<VoucherSide, Record<string, TaxRuleId>> = (() => {
+  const map: Record<VoucherSide, Record<string, TaxRuleId>> = { revenue: {}, expense: {} };
+  for (const [id, rule] of Object.entries(TAX_RULES)) {
+    if (rule.legacyTaxType) map[rule.side][rule.legacyTaxType] = id as TaxRuleId;
+  }
+  return map;
+})();
 
 /**
  * Semantics for taxTypes the spec does not map on a given side (or when the
@@ -253,6 +235,8 @@ export interface TaxTreatment {
   ruleId: TaxRuleId | null;
   /** Modern rule the deprecated taxType maps to, when only a taxType was present. */
   equivalentRuleId: TaxRuleId | null;
+  /** The rule that actually applies: ruleId, or the legacy equivalent. */
+  effectiveRuleId: TaxRuleId | null;
   legacyType: string | null;
   label: string;
   /** Which side of the books the document belongs to, when determinable. */
@@ -313,6 +297,7 @@ export function readTaxTreatment(doc: unknown): TaxTreatment {
     return {
       ruleId: found.id,
       equivalentRuleId: null,
+      effectiveRuleId: found.id,
       legacyType,
       label: found.rule.label,
       side: side ?? found.rule.side,
@@ -331,6 +316,7 @@ export function readTaxTreatment(doc: unknown): TaxTreatment {
       return {
         ruleId: null,
         equivalentRuleId: mappedId,
+        effectiveRuleId: mappedId,
         legacyType,
         label: `${rule.label} (via taxType "${legacyType}")`,
         side,
@@ -345,6 +331,7 @@ export function readTaxTreatment(doc: unknown): TaxTreatment {
     return {
       ruleId: null,
       equivalentRuleId: null,
+      effectiveRuleId: null,
       legacyType,
       label: fallback.label,
       side,
@@ -359,6 +346,7 @@ export function readTaxTreatment(doc: unknown): TaxTreatment {
   return {
     ruleId: null,
     equivalentRuleId: null,
+    effectiveRuleId: null,
     legacyType: null,
     label: "unbekannt",
     side,

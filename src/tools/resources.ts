@@ -1,11 +1,10 @@
 import { readFile, stat, writeFile } from "node:fs/promises";
-import { basename, isAbsolute, join, resolve, sep } from "node:path";
+import { basename, join } from "node:path";
 
-import { ReadOnlyError } from "../config.js";
 import {
   TAX_RULES,
   VOUCHER_STATUS,
-  type TaxRule,
+  type TaxRuleId,
   num,
   parseSevdeskDate,
   readTaxTreatment,
@@ -14,10 +13,11 @@ import {
   ymd,
 } from "../lib/vat.js";
 import {
+  assertAllowedPath,
   bool,
   int,
+  isDryRun,
   obj,
-  optBool,
   optNumber,
   optString,
   requireString,
@@ -25,6 +25,29 @@ import {
   type ToolContext,
   type ToolDef,
 } from "../lib/tool.js";
+
+/** Rule ids the sevDesk API accepts on vouchers — one source for schema enums and error texts. */
+const VOUCHER_RULE_IDS = Object.entries(TAX_RULES)
+  .filter(([, r]) => r.usableInVouchers)
+  .map(([id]) => id as TaxRuleId);
+
+/** Fetch a single document and refuse to hand it out for editing when it is enshrined. */
+async function fetchUnenshrined(
+  ctx: ToolContext,
+  type: "Voucher" | "Invoice",
+  id: string,
+): Promise<Row> {
+  const { data } = await ctx.client.request<{ objects?: Row[] }>({
+    method: "GET",
+    path: `/${type}/${encodeURIComponent(id)}`,
+  });
+  const doc = data?.objects?.[0];
+  if (!doc) throw new Error(`No ${type.toLowerCase()} with id ${id}.`);
+  if (doc.enshrined) {
+    throw new Error(`${type} ${id} is enshrined (festgeschrieben) — sevDesk forbids changing it.`);
+  }
+  return doc;
+}
 
 type Row = Record<string, unknown>;
 
@@ -42,23 +65,6 @@ function within(d: Date | null, p: { from?: Date; to?: Date }): boolean {
   if (p.from && d < p.from) return false;
   if (p.to && d > p.to) return false;
   return true;
-}
-
-function assertAllowedPath(ctx: ToolContext, filePath: string): string {
-  if (!isAbsolute(filePath)) throw new Error("File path must be absolute.");
-  const target = resolve(filePath);
-  const allow = ctx.config.allowedReceiptDirs;
-  if (allow.length === 0) {
-    throw new Error(
-      "Refused: filesystem access is disabled by default. Set SEVDESK_RECEIPT_DIRS to a " +
-        "colon-separated allowlist of directories to enable the receipt file tools.",
-    );
-  }
-  const ok = allow.some((a) => target === resolve(a) || target.startsWith(resolve(a) + sep));
-  if (!ok) {
-    throw new Error(`Refused: ${target} is outside SEVDESK_RECEIPT_DIRS (${allow.join(", ")}).`);
-  }
-  return target;
 }
 
 /* ------------------------------------------------------------------ */
@@ -346,12 +352,12 @@ const uploadVoucherFile: ToolDef = {
     properties: {
       filePath: str("Absolute path to the receipt file on this machine."),
       mimeType: str("Override the content type (default guessed from the extension)."),
+      dryRun: bool("Preview the request without sending it."),
     },
     required: ["filePath"],
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    if (ctx.config.readOnly) throw new ReadOnlyError("sevdesk_upload_voucher_file");
     const path = assertAllowedPath(ctx, requireString(args, "filePath"));
     const info = await stat(path).catch(() => null);
     if (!info?.isFile()) throw new Error(`Not a file: ${path}`);
@@ -364,8 +370,11 @@ const uploadVoucherFile: ToolDef = {
         : "image/jpeg";
     const mime = optString(args, "mimeType") ?? guessed;
 
-    if (ctx.config.dryRun) {
-      return { dryRun: true, wouldUpload: { path, bytes: info.size, mime } };
+    if (isDryRun(args, ctx)) {
+      return {
+        dryRun: true,
+        wouldSend: { method: "POST", path: "/Voucher/Factory/uploadTempFile", file: path, bytes: info.size, mime },
+      };
     }
 
     const bytes = await readFile(path);
@@ -426,8 +435,6 @@ const createVoucher: ToolDef = {
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    if (ctx.config.readOnly) throw new ReadOnlyError("sevdesk_create_voucher");
-
     const positionsIn = Array.isArray(args.positions) ? (args.positions as Row[]) : [];
     if (!positionsIn.length) throw new Error("At least one position is required.");
 
@@ -467,8 +474,8 @@ const createVoucher: ToolDef = {
 
     const payload = { voucher, voucherPosSave, voucherPosDelete: null };
 
-    if (args.dryRun === true || ctx.config.dryRun) {
-      return { dryRun: true, wouldPost: { path: "/Voucher/Factory/saveVoucher", payload } };
+    if (isDryRun(args, ctx)) {
+      return { dryRun: true, wouldSend: { method: "POST", path: "/Voucher/Factory/saveVoucher", body: payload } };
     }
 
     const { data } = await ctx.client.request<Row>({
@@ -519,33 +526,33 @@ const receiptGuidance: ToolDef = {
       path: side === "revenue" ? "/ReceiptGuidance/forRevenue" : "/ReceiptGuidance/forExpense",
     });
 
-    const accounts = (data?.objects ?? [])
-      .map((o) => ({
-        accountDatevId: String(o.accountDatevId ?? ""),
-        accountNumber: String(o.accountNumber ?? ""),
-        accountName: String(o.accountName ?? ""),
-        description: String(o.description ?? ""),
-        receiptTypes: (o.allowedReceiptTypes as string[] | undefined) ?? [],
-        allowedTaxRules: ((o.allowedTaxRules as Row[] | undefined) ?? []).map((r) => ({
-          id: String(r.id ?? ""),
-          name: String(r.name ?? ""),
-          rates: ((r.taxRates as string[] | undefined) ?? []).map((w) => RATE_WORD[w] ?? w),
-        })),
-      }))
-      .filter(
-        (a) =>
-          (!accountNumber || a.accountNumber === accountNumber) &&
-          (!taxRuleId || a.allowedTaxRules.some((r) => r.id === taxRuleId)) &&
-          (!query ||
-            `${a.accountNumber} ${a.accountName} ${a.description}`.toLowerCase().includes(query)),
-      );
+    // Filter on the raw rows first — the endpoint returns hundreds of
+    // accounts and only `limit` of them get shaped for output.
+    const matching = (data?.objects ?? []).filter(
+      (o) =>
+        (!accountNumber || String(o.accountNumber ?? "") === accountNumber) &&
+        (!taxRuleId ||
+          ((o.allowedTaxRules as Row[] | undefined) ?? []).some(
+            (r) => String(r.id ?? "") === taxRuleId,
+          )) &&
+        (!query ||
+          `${o.accountNumber} ${o.accountName} ${o.description}`.toLowerCase().includes(query)),
+    );
 
-    return {
-      side,
-      totalMatching: accounts.length,
-      returned: Math.min(accounts.length, limit),
-      accounts: accounts.slice(0, limit),
-    };
+    const accounts = matching.slice(0, limit).map((o) => ({
+      accountDatevId: String(o.accountDatevId ?? ""),
+      accountNumber: String(o.accountNumber ?? ""),
+      accountName: String(o.accountName ?? ""),
+      description: String(o.description ?? ""),
+      receiptTypes: (o.allowedReceiptTypes as string[] | undefined) ?? [],
+      allowedTaxRules: ((o.allowedTaxRules as Row[] | undefined) ?? []).map((r) => ({
+        id: String(r.id ?? ""),
+        name: String(r.name ?? ""),
+        rates: ((r.taxRates as string[] | undefined) ?? []).map((w) => RATE_WORD[w] ?? w),
+      })),
+    }));
+
+    return { side, totalMatching: matching.length, returned: accounts.length, accounts };
   },
 };
 
@@ -565,11 +572,7 @@ const setTaxRule: ToolDef = {
     type: "object",
     properties: {
       voucherId: str("Numeric voucher id."),
-      taxRuleId: str("Target tax rule id.", {
-        enum: Object.entries(TAX_RULES)
-          .filter(([, r]) => (r as TaxRule).usableInVouchers)
-          .map(([id]) => id),
-      }),
+      taxRuleId: str("Target tax rule id.", { enum: VOUCHER_RULE_IDS }),
       dryRun: bool("Preview the request without sending it."),
     },
     required: ["voucherId", "taxRuleId"],
@@ -577,28 +580,15 @@ const setTaxRule: ToolDef = {
   },
   async handler(args, ctx) {
     const id = requireString(args, "voucherId");
-    const target = requireString(args, "taxRuleId");
-    const rule = (TAX_RULES as Record<string, TaxRule>)[target];
-    if (!rule || !rule.usableInVouchers) {
-      const usable = Object.entries(TAX_RULES)
-        .filter(([, r]) => (r as TaxRule).usableInVouchers)
-        .map(([rid]) => rid)
-        .join(", ");
-      throw new Error(`taxRule '${target}' cannot be used on vouchers. Usable rules: ${usable}.`);
-    }
-
-    const { data } = await ctx.client.request<{ objects?: Row[] }>({
-      method: "GET",
-      path: `/Voucher/${encodeURIComponent(id)}`,
-    });
-    const v = data?.objects?.[0];
-    if (!v) throw new Error(`No voucher with id ${id}.`);
-    if (v.enshrined) {
+    const target = requireString(args, "taxRuleId") as TaxRuleId;
+    if (!VOUCHER_RULE_IDS.includes(target)) {
       throw new Error(
-        `Voucher ${id} is enshrined (festgeschrieben) — sevDesk forbids changing it.`,
+        `taxRule '${target}' cannot be used on vouchers. Usable rules: ${VOUCHER_RULE_IDS.join(", ")}.`,
       );
     }
+    const rule = TAX_RULES[target];
 
+    const v = await fetchUnenshrined(ctx, "Voucher", id);
     const before = readTaxTreatment(v);
     const side = voucherSide(v) ?? rule.side;
     if (side !== rule.side) {
@@ -617,7 +607,7 @@ const setTaxRule: ToolDef = {
     }
 
     const body = { taxRule: { id: target, objectName: "TaxRule" } };
-    if ((optBool(args, "dryRun") ?? false) || ctx.config.dryRun) {
+    if (isDryRun(args, ctx)) {
       return {
         dryRun: true,
         wouldSend: { method: "PUT", path: `/Voucher/${id}`, body },
@@ -681,9 +671,12 @@ const createInvoice: ToolDef = {
       invoiceDate: str("Invoice date, yyyy-mm-dd (default today)."),
       header: str("Optional invoice header text."),
       taxRuleId: str("Revenue tax rule id (default 1, or 11 for Kleinunternehmer).", {
-        enum: ["1", "2", "3", "4", "5", "11", "17"],
+        // Model_Invoice.taxRule per the sevDesk spec — invoices accept the OSS
+        // and §18b rules that vouchers refuse, and not the guidance-only 22.
+        enum: ["1", "2", "3", "4", "5", "11", "17", "18", "19", "20", "21"],
       }),
       currency: str("Currency (default EUR)."),
+      dryRun: bool("Preview the request without sending it."),
     },
     required: ["contactId", "positions"],
     additionalProperties: false,
@@ -698,33 +691,52 @@ const createInvoice: ToolDef = {
     const defaultRate = ctx.config.kleinunternehmer ? 0 : 19;
     const date = optString(args, "invoiceDate") ?? ymd(new Date());
 
+    const invoicePosSave = positions.map((p, i) => {
+      const quantity = p.quantity === undefined ? 1 : num(p.quantity);
+      if (!(quantity > 0)) throw new Error(`Position ${i + 1}: quantity must be a positive number.`);
+      // No silent coercion for money-relevant fields — a null taxRate must not
+      // become 0 % on a taxable invoice.
+      if (p.taxRate !== undefined && typeof p.taxRate !== "number") {
+        throw new Error(`Position ${i + 1}: taxRate must be a number when given.`);
+      }
+      return {
+        objectName: "InvoicePos",
+        mapAll: true,
+        name: String(p.name ?? ""),
+        quantity,
+        price: num(p.price),
+        taxRate: typeof p.taxRate === "number" ? p.taxRate : defaultRate,
+        unity: { id: 1, objectName: "Unity" },
+      };
+    });
+
     const body = {
       invoice: {
         objectName: "Invoice",
         mapAll: true,
         invoiceDate: date,
-        // Always a draft: review happens in sevDesk, never silently.
-        status: "50",
+        // Always a draft (invoice status 100): review happens in sevDesk, never silently.
+        status: "100",
         invoiceType: "RE",
         currency: optString(args, "currency") ?? "EUR",
         contact: { id: Number(contactId), objectName: "Contact" },
         taxRule: { id: ruleId, objectName: "TaxRule" },
+        taxRate: defaultRate,
+        taxText: ctx.config.kleinunternehmer
+          ? "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
+          : `Umsatzsteuer ${defaultRate}%`,
         discount: 0,
         ...(optString(args, "header") ? { header: optString(args, "header") } : {}),
       },
-      invoicePosSave: positions.map((p) => ({
-        objectName: "InvoicePos",
-        mapAll: true,
-        name: String(p.name ?? ""),
-        quantity: num(p.quantity) || 1,
-        price: num(p.price),
-        taxRate: p.taxRate === undefined ? defaultRate : num(p.taxRate),
-        unity: { id: 1, objectName: "Unity" },
-      })),
+      invoicePosSave,
+      // The Factory endpoint expects these four, in this order, on every call.
       invoicePosDelete: null,
+      discountSave: null,
+      discountDelete: null,
+      takeDefaultAddress: true,
     };
 
-    if (ctx.config.dryRun) {
+    if (isDryRun(args, ctx)) {
       return { dryRun: true, wouldSend: { method: "POST", path: "/Invoice/Factory/saveInvoice", body } };
     }
 
@@ -765,24 +777,33 @@ const getInvoicePdf: ToolDef = {
     const id = requireString(args, "invoiceId");
     const dir = assertAllowedPath(ctx, requireString(args, "directory"));
 
-    const { data } = await ctx.client.request<{
-      objects?: { filename?: unknown; content?: unknown; base64Encoded?: unknown };
-    }>({
+    const { data } = await ctx.client.request<Row>({
       method: "GET",
       path: `/Invoice/${encodeURIComponent(id)}/getPdf`,
-      query: { preventSendBy: true, download: true },
+      query: { preventSendBy: true },
     });
 
-    const content = data?.objects?.content;
+    // The spec documents the pdf payload at the top level; other endpoints
+    // wrap responses in `objects` — accept both.
+    const meta = ((data as Row | undefined)?.objects ?? data) as Row | undefined;
+    const content = meta?.content;
     if (typeof content !== "string" || content.length === 0) {
       throw new Error(`sevDesk returned no PDF content for invoice ${id}.`);
     }
+    if (meta?.base64encoded === false || meta?.base64Encoded === false) {
+      throw new Error(`sevDesk returned non-base64 PDF content for invoice ${id} — not saved.`);
+    }
     // The filename comes from the API — keep only its basename so it cannot
     // point outside the allowlisted directory.
-    const filename = basename(String(data?.objects?.filename ?? `invoice-${id}.pdf`));
+    const filename = basename(String(meta?.filename ?? `invoice-${id}.pdf`));
     const target = join(dir, filename);
     const bytes = Buffer.from(content, "base64");
-    await writeFile(target, bytes);
+    // flag wx: never clobber an existing file in the user's receipt archive.
+    await writeFile(target, bytes, { flag: "wx" }).catch((err: NodeJS.ErrnoException) => {
+      throw err.code === "EEXIST"
+        ? new Error(`Refused: ${target} already exists — not overwriting the archive.`)
+        : err;
+    });
     return { saved: target, bytes: bytes.length };
   },
 };
@@ -802,6 +823,7 @@ const markInvoiceSent: ToolDef = {
       sendType: str("How the invoice left the house (default VPDF).", {
         enum: ["VPDF", "VPR", "VP"],
       }),
+      dryRun: bool("Preview the request without sending it."),
     },
     required: ["invoiceId"],
     additionalProperties: false,
@@ -810,31 +832,29 @@ const markInvoiceSent: ToolDef = {
     const id = requireString(args, "invoiceId");
     const sendType = optString(args, "sendType") ?? "VPDF";
 
-    const { data } = await ctx.client.request<{ objects?: Row[] }>({
-      method: "GET",
-      path: `/Invoice/${encodeURIComponent(id)}`,
-    });
-    const invoice = data?.objects?.[0];
-    if (!invoice) throw new Error(`No invoice with id ${id}.`);
-    if (invoice.enshrined) {
-      throw new Error(`Invoice ${id} is enshrined (festgeschrieben) — sevDesk forbids changing it.`);
-    }
+    await fetchUnenshrined(ctx, "Invoice", id);
 
     const body = { sendType, sendDraft: false };
-    if (ctx.config.dryRun) {
+    if (isDryRun(args, ctx)) {
       return { dryRun: true, wouldSend: { method: "PUT", path: `/Invoice/${id}/sendBy`, body } };
     }
 
-    const { data: updated } = await ctx.client.request<{ objects?: Row }>({
+    await ctx.client.request({
       method: "PUT",
       path: `/Invoice/${encodeURIComponent(id)}/sendBy`,
       body,
       mutating: true,
     });
+
+    // Trust nothing: read the invoice back instead of parsing the PUT response.
+    const { data: check } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/Invoice/${encodeURIComponent(id)}`,
+    });
     return {
       invoiceId: id,
       sendType,
-      verified: (updated?.objects as Row | undefined)?.sendType === sendType,
+      verified: check?.objects?.[0]?.sendType === sendType,
     };
   },
 };

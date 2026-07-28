@@ -30,9 +30,8 @@ export function buildServer(ctx: ToolContext): Server {
   server.setRequestHandler(ListToolsRequestSchema, async () => ({
     tools: tools
       // Hide write tools entirely in read-only mode so they cannot be attempted.
-      // sevdesk_call stays listed — it also covers reads — and refuses mutating
-      // operations at call time.
-      .filter((t) => !(ctx.config.readOnly && t.mutating && t.name !== "sevdesk_call"))
+      // Tools with listInReadOnly decide per call and stay visible.
+      .filter((t) => !(ctx.config.readOnly && t.mutating && !t.listInReadOnly))
       .map((t) => ({
         name: t.name,
         title: t.title,
@@ -52,6 +51,21 @@ export function buildServer(ctx: ToolContext): Server {
       return {
         isError: true,
         content: [{ type: "text" as const, text: `Unknown tool: ${name}` }],
+      };
+    }
+
+    // Same rule as the listing filter — a hidden write tool is also refused
+    // here, so a stale tool list cannot reach a handler. The HTTP client
+    // refuses mutating requests independently as the last line.
+    if (ctx.config.readOnly && tool.mutating && !tool.listInReadOnly) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: `Refused: '${name}' modifies data in sevDesk, but the server runs with SEVDESK_READ_ONLY=true.`,
+          },
+        ],
       };
     }
 
