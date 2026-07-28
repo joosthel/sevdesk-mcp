@@ -1074,6 +1074,132 @@ const reconcileTransactions: ToolDef = {
 };
 
 /* ------------------------------------------------------------------ */
+/* 7. receivables aging                                                */
+/* ------------------------------------------------------------------ */
+
+const INVOICE_STATUS: Record<string, string> = {
+  "50": "deaktivierte Abo-Rechnung",
+  "100": "Entwurf",
+  "200": "offen",
+  "750": "teilbezahlt",
+  "1000": "bezahlt",
+};
+
+const AGING_BUCKETS = ["current", "1-30", "31-60", "61-90", ">90"] as const;
+
+function agingBucket(daysOverdue: number): (typeof AGING_BUCKETS)[number] {
+  if (daysOverdue <= 0) return "current";
+  if (daysOverdue <= 30) return "1-30";
+  if (daysOverdue <= 60) return "31-60";
+  if (daysOverdue <= 90) return "61-90";
+  return ">90";
+}
+
+const invoiceAging: ToolDef = {
+  name: "sevdesk_invoice_aging",
+  title: "Overdue invoices (receivables aging)",
+  description:
+    "Who owes you money and for how long: open and partially paid invoices bucketed by days " +
+    "overdue (invoice date + payment terms), the outstanding remainder per invoice, drafts " +
+    "that were never sent, and open invoices missing a send mark. Read-only.",
+  mutating: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      from: str("Start of period (invoice date), dd.mm.yyyy or yyyy-mm-dd."),
+      to: str("End of period, dd.mm.yyyy or yyyy-mm-dd."),
+      maxItems: int("Safety cap (default 2000)."),
+    },
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const period = readPeriod(args);
+    const all = await ctx.client.getAll<Row>(
+      "/Invoice",
+      { embed: "contact" },
+      { maxItems: optNumber(args, "maxItems") ?? 2000 },
+    );
+    const invoices = all.filter((i) => inPeriod(parseSevdeskDate(i.invoiceDate), period));
+    const now = new Date();
+
+    interface AgingRow {
+      id: string;
+      invoiceNumber: string;
+      customer: string;
+      invoiceDate: string | null;
+      dueDate: string | null;
+      gross: number;
+      paid: number;
+      open: number;
+      daysOverdue: number;
+      status: string;
+      neverMarkedSent: boolean;
+    }
+
+    const aging = Object.fromEntries(
+      AGING_BUCKETS.map((b) => [b, { count: 0, open: 0, invoices: [] as AgingRow[] }]),
+    ) as Record<(typeof AGING_BUCKETS)[number], { count: number; open: number; invoices: AgingRow[] }>;
+    const drafts: Array<{ id: string; invoiceNumber: string; customer: string; gross: number }> = [];
+    let outstandingTotal = 0;
+
+    for (const inv of invoices) {
+      const status = String(inv.status ?? "");
+      const customer = String((inv.contact as Row | undefined)?.name ?? "?");
+      const gross = round2(num(inv.sumGross));
+
+      if (status === "100") {
+        drafts.push({
+          id: String(inv.id ?? ""),
+          invoiceNumber: String(inv.invoiceNumber ?? ""),
+          customer,
+          gross,
+        });
+        continue;
+      }
+      if (status !== "200" && status !== "750") continue;
+
+      const paid = round2(num(inv.paidAmount));
+      const open = round2(gross - paid);
+      const date = parseSevdeskDate(inv.invoiceDate);
+      const due = date ? new Date(date.getTime() + num(inv.timeToPay) * DAY_MS) : null;
+      const daysOverdue = due ? Math.max(0, Math.floor((now.getTime() - due.getTime()) / DAY_MS)) : 0;
+
+      const bucket = aging[agingBucket(daysOverdue)];
+      bucket.count += 1;
+      bucket.open = round2(bucket.open + open);
+      bucket.invoices.push({
+        id: String(inv.id ?? ""),
+        invoiceNumber: String(inv.invoiceNumber ?? ""),
+        customer,
+        invoiceDate: date ? ymd(date) : null,
+        dueDate: due ? ymd(due) : null,
+        gross,
+        paid,
+        open,
+        daysOverdue,
+        status: INVOICE_STATUS[status] ?? status,
+        neverMarkedSent: !inv.sendDate,
+      });
+      outstandingTotal = round2(outstandingTotal + open);
+    }
+    for (const bucket of Object.values(aging)) {
+      bucket.invoices.sort((a, b) => b.daysOverdue - a.daysOverdue);
+    }
+
+    return {
+      period: periodLabel(period),
+      invoicesExamined: invoices.length,
+      outstandingTotal,
+      aging,
+      drafts,
+      note:
+        "Due dates are invoice date + payment terms (timeToPay). 'neverMarkedSent' means sevDesk " +
+        "has no send mark — the customer may never have received the invoice.",
+    };
+  },
+};
+
+/* ------------------------------------------------------------------ */
 
 export const auditTools: ToolDef[] = [
   auditVat,
@@ -1082,4 +1208,5 @@ export const auditTools: ToolDef[] = [
   subscriptionGaps,
   diffReceiptFolder,
   reconcileTransactions,
+  invoiceAging,
 ];

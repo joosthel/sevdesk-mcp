@@ -16,6 +16,7 @@ interface StubData {
   contacts?: Row[];
   guidance?: Row[];
   transactions?: Row[];
+  invoices?: Row[];
 }
 
 /**
@@ -28,6 +29,7 @@ function stubCtx(d: StubData, config: Record<string, unknown> = {}): ToolContext
       if (path === "/Voucher") return d.vouchers ?? [];
       if (path === "/Contact") return d.contacts ?? [];
       if (path === "/CheckAccountTransaction") return d.transactions ?? [];
+      if (path === "/Invoice") return d.invoices ?? [];
       return [];
     },
     async request(opts: { path: string; query?: Record<string, unknown> }) {
@@ -304,5 +306,75 @@ describe("sevdesk_reconcile_transactions", () => {
       }),
     )) as { vouchersWithoutPayment: Row[] };
     expect(result.vouchersWithoutPayment).toHaveLength(1);
+  });
+});
+
+describe("sevdesk_invoice_aging", () => {
+  const aging = auditTools.find((t) => t.name === "sevdesk_invoice_aging")!;
+  const daysAgo = (n: number): string =>
+    new Date(Date.now() - n * 86_400_000).toISOString().slice(0, 10);
+
+  const invoice = (overrides: Row): Row => ({
+    status: "200",
+    timeToPay: 14,
+    sumGross: 1000,
+    paidAmount: 0,
+    contact: { name: "Kunde GmbH" },
+    ...overrides,
+  });
+
+  it("buckets open invoices by days overdue and sums the outstanding amounts", async () => {
+    const result = (await aging.handler(
+      {},
+      stubCtx({
+        invoices: [
+          invoice({ id: "1", invoiceNumber: "RE-1", invoiceDate: daysAgo(45) }), // ~31 days overdue
+          invoice({ id: "2", invoiceNumber: "RE-2", invoiceDate: daysAgo(0) }), // not due yet
+          invoice({ id: "3", invoiceNumber: "RE-3", invoiceDate: daysAgo(45), status: "1000" }),
+        ],
+      }),
+    )) as {
+      outstandingTotal: number;
+      aging: Record<string, { count: number; open: number; invoices: Array<{ invoiceNumber: string }> }>;
+    };
+    expect(result.outstandingTotal).toBe(2000);
+    expect(result.aging["31-60"]!.count).toBe(1);
+    expect(result.aging["31-60"]!.invoices[0]!.invoiceNumber).toBe("RE-1");
+    expect(result.aging.current!.count).toBe(1);
+  });
+
+  it("uses the open remainder for partially paid invoices", async () => {
+    const result = (await aging.handler(
+      {},
+      stubCtx({
+        invoices: [
+          invoice({ id: "4", invoiceNumber: "RE-4", invoiceDate: daysAgo(20), status: "750", paidAmount: 400 }),
+        ],
+      }),
+    )) as { outstandingTotal: number };
+    expect(result.outstandingTotal).toBe(600);
+  });
+
+  it("lists drafts separately as hygiene, not receivables", async () => {
+    const result = (await aging.handler(
+      {},
+      stubCtx({
+        invoices: [invoice({ id: "5", invoiceNumber: "RE-5", invoiceDate: daysAgo(10), status: "100" })],
+      }),
+    )) as { outstandingTotal: number; drafts: Array<{ invoiceNumber: string }> };
+    expect(result.outstandingTotal).toBe(0);
+    expect(result.drafts).toHaveLength(1);
+  });
+
+  it("flags open invoices that were never marked as sent", async () => {
+    const result = (await aging.handler(
+      {},
+      stubCtx({
+        invoices: [invoice({ id: "6", invoiceNumber: "RE-6", invoiceDate: daysAgo(45), sendDate: null })],
+      }),
+    )) as {
+      aging: Record<string, { invoices: Array<{ neverMarkedSent: boolean }> }>;
+    };
+    expect(result.aging["31-60"]!.invoices[0]!.neverMarkedSent).toBe(true);
   });
 });

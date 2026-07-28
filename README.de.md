@@ -77,7 +77,7 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 ## Tools
 
-**22 Tools decken alle 151 API-Operationen ab.**
+**23 Tools decken alle 151 API-Operationen ab.**
 
 ### Prüfung
 
@@ -89,6 +89,7 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 | `sevdesk_subscription_gaps` | Erkennt monatliche Zahlungsrhythmen pro Lieferant und meldet fehlende Monate |
 | `sevdesk_diff_receipt_folder` | Gleicht einen lokalen Ordner mit Beleg-PDFs gegen gebuchte Belege ab, in beide Richtungen (braucht `SEVDESK_RECEIPT_DIRS`) |
 | `sevdesk_reconcile_transactions` | Ordnet Banktransaktionen Belegen nach Betrag und Datumsnähe zu: Zahlungen ohne Beleg, Belege ohne Zahlung |
+| `sevdesk_invoice_aging` | Wer schuldet dir Geld und wie lange: offene Rechnungen nach Überfälligkeit gruppiert, Restbeträge teilbezahlter Rechnungen, nie versendete Entwürfe |
 
 ### Alltag
 
@@ -101,6 +102,17 @@ Highlights: `sevdesk_receipt_guidance` beantwortet „welche Kombinationen aus B
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
 
 Statt 151 Tools zu registrieren und die Tool-Liste des Clients zu fluten, liefert der Server einen durchsuchbaren Katalog, der aus sevDesks OpenAPI-Dokument generiert wird. Suchen, Signatur lesen, aufrufen — jeder Endpunkt ist erreichbar.
+
+## Typische Arbeitsabläufe
+
+Die Tools lassen sich kombinieren — alltägliche Buchhaltungsaufgaben, jeweils ein einziger Prompt:
+
+- **Monatsabschluss:** *„Mach einen Monatsabschluss-Check für Juni: offene Entwürfe, Bankzahlungen ohne Beleg, Belege ohne Zahlung, USt-Funde, Summen, die nicht aufgehen."*
+- **Geld eintreiben:** *„Wer schuldet mir Geld? Zeig überfällige Rechnungen nach Alter — und welche nie als versendet markiert wurden."*
+- **Belegdisziplin:** *„Vergleiche meinen Belegordner mit sevDesk und liste, was auf beiden Seiten fehlt."* (braucht `SEVDESK_RECEIPT_DIRS`)
+- **Laufende Kosten:** *„Welche Abos tauchen nicht mehr auf, und welche Lieferanten buche ich uneinheitlich?"*
+- **Vor der Voranmeldung:** *„Führe die USt-Prüfung und den §13b-Report fürs Quartal aus und fasse zusammen, was mein Steuerberater wissen sollte."*
+- **Alles andere:** *„Ruf die sevDesk-API auf: …"* — Aufträge, Gutschriften, Exporte, Artikel und jeder weitere Endpunkt sind über den Katalog erreichbar.
 
 ## Konfiguration
 

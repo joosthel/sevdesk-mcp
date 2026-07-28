@@ -2,6 +2,8 @@
 
 ## 0.4.0 — 2026-07-28
 
+- `sevdesk_invoice_aging`: receivables aging — open invoices bucketed by
+  days overdue, partially paid remainders, never-sent drafts.
 - Three guarded invoice tools: `sevdesk_create_invoice` (always drafts,
   Kleinunternehmer-aware defaults), `sevdesk_get_invoice_pdf` (never touches
   the send state, never overwrites files), `sevdesk_mark_invoice_sent`

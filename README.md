@@ -77,7 +77,7 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 
 ## Tools
 
-**22 tools cover all 151 API operations.**
+**23 tools cover all 151 API operations.**
 
 ### Audit
 
@@ -89,6 +89,7 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 | `sevdesk_subscription_gaps` | Detects monthly cadences per supplier and reports the missing months |
 | `sevdesk_diff_receipt_folder` | Diffs a local folder of receipt PDFs against booked vouchers, both directions (requires `SEVDESK_RECEIPT_DIRS`) |
 | `sevdesk_reconcile_transactions` | Matches bank transactions against vouchers by amount and date proximity: payments without a receipt, vouchers without a payment |
+| `sevdesk_invoice_aging` | Who owes you money and for how long: open invoices bucketed by days overdue, partially paid remainders, drafts never sent |
 
 ### Everyday
 
@@ -101,6 +102,17 @@ Highlights: `sevdesk_receipt_guidance` answers "which booking account / tax rule
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
 
 Rather than registering 151 tools and swamping the client's tool list, the server ships a searchable catalogue generated from sevDesk's OpenAPI document. Search for what you need, read its signature, call it. Every endpoint is reachable.
+
+## Common workflows
+
+The tools compose — these are everyday bookkeeping jobs, each a single prompt:
+
+- **Month-end close:** *"Do a month-end check for June: pending drafts, bank payments without receipts, vouchers without payments, VAT findings, sums that don't add up."*
+- **Chasing money:** *"Who owes me money? Show overdue invoices by age, and tell me which ones were never even marked as sent."*
+- **Receipt discipline:** *"Compare my receipts folder with sevDesk and list what's missing on either side."* (needs `SEVDESK_RECEIPT_DIRS`)
+- **Recurring costs:** *"Which subscriptions stopped appearing, and which suppliers am I booking inconsistently?"*
+- **Before the VAT return:** *"Run the VAT audit and the §13b report for the quarter and summarize what my Steuerberater should know."*
+- **Anything else:** *"Call the sevDesk API: …"* — orders, credit notes, exports, parts and every other endpoint are reachable through the catalogue.
 
 ## Configuration
 
