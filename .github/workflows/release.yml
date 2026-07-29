@@ -24,8 +24,9 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      # Token-based for the first publish; once the package exists, configure
-      # npm Trusted Publishing for this repo and drop the NODE_AUTH_TOKEN line.
+      # Tokenless: requires npm Trusted Publishing configured for this package
+      # (npmjs.com → sevdesk-mcp → Settings → Trusted Publishing:
+      # repository joosthel/sevdesk-mcp, workflow release.yml).
       # Skips when the version is already on npm so re-runs stay idempotent.
       - name: Publish to npm
         run: |
@@ -35,8 +36,6 @@ jobs:
           else
             npm publish --provenance --access public
           fi
-        env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to the MCP registry
         run: |
