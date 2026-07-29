@@ -129,6 +129,10 @@ The tools compose — these are everyday bookkeeping jobs, each a single prompt:
 
 The threat model, guarantees and vulnerability reporting are documented in [SECURITY.md](SECURITY.md).
 
+## Privacy Policy
+
+Everything runs locally: your token and accounting data flow only between your MCP client and the sevDesk API — no storage, no telemetry, no third parties. Full policy: [PRIVACY.md](PRIVACY.md).
+
 ## Write safety
 
 Read-only mode is enforced three times: write tools are hidden from the tool list, the dispatcher refuses them, and the HTTP client refuses every mutating request independently. With writes enabled:

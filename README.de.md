@@ -129,6 +129,10 @@ Die Tools lassen sich kombinieren — alltägliche Buchhaltungsaufgaben, jeweils
 
 Bedrohungsmodell, Garantien und Schwachstellenmeldung: [SECURITY.md](SECURITY.md).
 
+## Datenschutz
+
+Alles läuft lokal: Token und Buchhaltungsdaten fließen ausschließlich zwischen deinem MCP-Client und der sevDesk-API — keine Speicherung, keine Telemetrie, keine Dritten. Vollständige Erklärung: [PRIVACY.md](PRIVACY.md) (englisch).
+
 ## Schreibsicherheit
 
 Der Nur-Lesen-Modus greift dreifach: Schreib-Tools verschwinden aus der Tool-Liste, der Dispatcher verweigert sie, und der HTTP-Client verweigert jede schreibende Anfrage unabhängig davon. Mit aktivierten Schreibzugriffen:
