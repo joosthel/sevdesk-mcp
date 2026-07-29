@@ -24,10 +24,12 @@ jobs:
       - run: npm run build
       - run: npm test
 
-      # Requires npm Trusted Publishing configured for this repo on npmjs.com
-      # (or set an NPM_TOKEN secret and add NODE_AUTH_TOKEN below).
+      # Token-based for the first publish; once the package exists, configure
+      # npm Trusted Publishing for this repo and drop the NODE_AUTH_TOKEN line.
       - name: Publish to npm
         run: npm publish --provenance --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
       - name: Publish to the MCP registry
         run: |
