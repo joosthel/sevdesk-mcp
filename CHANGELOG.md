@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+- Node.js 20 reached end-of-life (April 2026): minimum engine is now
+  Node 22, CI tests on 22 and 24, GitHub Actions bumped to current
+  releases (still SHA-pinned).
+- Privacy policy (PRIVACY.md), linked from the READMEs and declared in
+  the MCPB manifest.
+
 ## 0.4.0 — 2026-07-28
 
 - `sevdesk_invoice_aging`: receivables aging — open invoices bucketed by

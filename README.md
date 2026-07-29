@@ -10,7 +10,7 @@ Connect Claude (or any MCP client) to your sevDesk account: list and create vouc
 
 ## Quick start
 
-**You need:** [Node.js](https://nodejs.org) ≥ 20, a sevDesk account, and an MCP client (Claude Code, Claude Desktop, or any other).
+**You need:** [Node.js](https://nodejs.org) ≥ 22, a sevDesk account, and an MCP client (Claude Code, Claude Desktop, or any other).
 
 **1. Get your API token**
 

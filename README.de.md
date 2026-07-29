@@ -10,7 +10,7 @@ Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege
 
 ## Schnellstart
 
-**Du brauchst:** [Node.js](https://nodejs.org) ≥ 20, ein sevDesk-Konto und einen MCP-Client (Claude Code, Claude Desktop oder einen anderen).
+**Du brauchst:** [Node.js](https://nodejs.org) ≥ 22, ein sevDesk-Konto und einen MCP-Client (Claude Code, Claude Desktop oder einen anderen).
 
 **1. API-Token holen**
 

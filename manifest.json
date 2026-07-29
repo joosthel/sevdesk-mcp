@@ -39,7 +39,7 @@
   "privacy_policies": ["https://github.com/joosthel/sevdesk-mcp/blob/main/PRIVACY.md"],
   "compatibility": {
     "platforms": ["darwin", "win32", "linux"],
-    "runtimes": { "node": ">=20" }
+    "runtimes": { "node": ">=22" }
   },
   "keywords": ["sevdesk", "accounting", "buchhaltung", "vat", "umsatzsteuer", "reverse-charge"]
 }

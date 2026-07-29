@@ -27,7 +27,7 @@
     "LICENSE"
   ],
   "engines": {
-    "node": ">=20"
+    "node": ">=22"
   },
   "scripts": {
     "build:catalog": "node scripts/build-catalog.mjs",
