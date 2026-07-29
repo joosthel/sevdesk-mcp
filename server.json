@@ -1,7 +1,7 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-09-29/server.schema.json",
   "name": "io.github.joosthel/sevdesk-mcp",
-  "description": "MCP server for the sevDesk accounting API — full endpoint coverage plus a bookkeeping audit layer (VAT/§13b reverse-charge checks, duplicate detection, bank reconciliation).",
+  "description": "Complete sevDesk MCP server: all API endpoints, guarded writes, built-in bookkeeping audits.",
   "repository": {
     "url": "https://github.com/joosthel/sevdesk-mcp",
     "source": "github"

@@ -26,8 +26,15 @@ jobs:
 
       # Token-based for the first publish; once the package exists, configure
       # npm Trusted Publishing for this repo and drop the NODE_AUTH_TOKEN line.
+      # Skips when the version is already on npm so re-runs stay idempotent.
       - name: Publish to npm
-        run: npm publish --provenance --access public
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "sevdesk-mcp@${VERSION}" version >/dev/null 2>&1; then
+            echo "sevdesk-mcp@${VERSION} is already on npm — skipping."
+          else
+            npm publish --provenance --access public
+          fi
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
