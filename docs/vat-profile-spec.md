@@ -2,6 +2,15 @@
 
 Version: v1 (draft) → refined twice below (see Refinement Log).
 
+**Status: implemented and conformance-checked.** Every commitment below
+is in the code (`src/lib/profile.ts` and its call sites); acceptance
+criteria 1–5 are executable as `tests/personas.test.ts` plus
+`tests/profile.test.ts`. The §5 description-slimming pass additionally
+removed a misleading tax-rule shorthand from `sevdesk_create_voucher`
+(it suggested revenue rule 5 for §13b on what are mostly expense
+vouchers; expense-side reverse charge is 12/13/14 — the description now
+points to `sevdesk_receipt_guidance` instead).
+
 ## Problem
 
 The server's tax-regime opinionation is a single boolean

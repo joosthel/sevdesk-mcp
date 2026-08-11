@@ -22,10 +22,8 @@ const listOperations: ToolDef = {
   title: "List sevDesk API operations",
   description:
     `Search the sevDesk API catalogue (${catalog.operationCount} operations, ` +
-    `API ${catalog.apiVersion}). Use this to find the operationId for anything ` +
-    `not covered by a dedicated tool, then call sevdesk_describe_operation for its ` +
-    `parameters and sevdesk_call to execute it. ` +
-    `Available tags: ${catalog.tags.join(", ")}.`,
+    `API ${catalog.apiVersion}) for the operationId of anything not covered by a ` +
+    `dedicated tool. Available tags: ${catalog.tags.join(", ")}.`,
   mutating: false,
   inputSchema: {
     type: "object",

@@ -258,8 +258,7 @@ const auditVat: ToolDef = {
     "domestic expenses (taxRule 9/10) instead of Reverse Charge §13b (taxRule 12/13/14), " +
     "revenue rules sitting on expense vouchers, tax rates that contradict the chosen rule, " +
     "sums that do not add up, and the same supplier booked inconsistently across vouchers. " +
-    "Read-only. This is the check that tells you whether your §13b amounts will be reported " +
-    "correctly in the VAT return.",
+    "Read-only.",
   mutating: false,
   inputSchema: {
     type: "object",
