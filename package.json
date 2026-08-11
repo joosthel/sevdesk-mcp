@@ -20,6 +20,7 @@
   "files": [
     "dist",
     "openapi",
+    "skills",
     "README.md",
     "README.de.md",
     "CHANGELOG.md",

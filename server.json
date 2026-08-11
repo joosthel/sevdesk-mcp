@@ -27,6 +27,12 @@
           "description": "Start in read-only mode (recommended: true)",
           "isRequired": false,
           "format": "boolean"
+        },
+        {
+          "name": "SEVDESK_VAT_REGIME",
+          "description": "VAT regime: regular, kleinunternehmer (§19 UStG) or auto (default: infer from recent invoices)",
+          "isRequired": false,
+          "format": "string"
         }
       ]
     }

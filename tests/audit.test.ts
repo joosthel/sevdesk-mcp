@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { createProfileResolver } from "../src/lib/profile.js";
 import type { ToolContext } from "../src/lib/tool.js";
 import { auditTools } from "../src/tools/audit.js";
 
@@ -44,7 +45,19 @@ function stubCtx(d: StubData, config: Record<string, unknown> = {}): ToolContext
       return { status: 200, data: {} };
     },
   };
-  return { client, config: { allowedReceiptDirs: [], ...config } } as unknown as ToolContext;
+  const fullConfig = {
+    allowedReceiptDirs: [],
+    vatRegime: "auto",
+    vatRegimeSource: config.vatRegime && config.vatRegime !== "auto" ? "env" : "default",
+    ...config,
+  };
+  return {
+    client,
+    config: fullConfig,
+    // The real resolver against the stub client: audit tests exercise actual
+    // profile resolution (d.invoices feeds the ledger inference).
+    getProfile: createProfileResolver(client as never, fullConfig as never),
+  } as unknown as ToolContext;
 }
 
 function voucher(overrides: Row): Row {
@@ -148,7 +161,7 @@ describe("sevdesk_audit_vat", () => {
         vouchers: [voucher({ id: "20", taxRule: { id: "9" }, supplierName: "Northwind Cloud, PBC" })],
         positionsByVoucher: { "20": [{ taxRate: 0 }] },
       },
-      { kleinunternehmer: true },
+      { vatRegime: "kleinunternehmer" },
     );
     const result = (await auditVat.handler({}, ctx)) as AuditResult & {
       findings: Array<{ code: string; suggestion: string }>;

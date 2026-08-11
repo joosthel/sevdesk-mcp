@@ -25,6 +25,7 @@ import {
   type ToolContext,
   type ToolDef,
 } from "../lib/tool.js";
+import { regimeMismatch } from "../lib/profile.js";
 
 /** Rule ids the sevDesk API accepts on vouchers — one source for schema enums and error texts. */
 const VOUCHER_RULE_IDS = Object.entries(TAX_RULES)
@@ -73,9 +74,8 @@ const ping: ToolDef = {
   name: "sevdesk_ping",
   title: "Check the sevDesk connection",
   description:
-    "Verify that the API token works, report the server mode (read-only / dry-run) and the " +
-    "account's bookkeeping system version (1.0 uses taxType, 2.0 uses taxRule). " +
-    "Run this first when something behaves unexpectedly.",
+    "Verify the API token, report server mode, bookkeeping generation (1.0 taxType / " +
+    "2.0 taxRule) and the account's detected VAT regime. Run this first.",
   mutating: false,
   inputSchema: { type: "object", properties: {}, additionalProperties: false },
   async handler(_args, ctx) {
@@ -94,11 +94,20 @@ const ping: ToolDef = {
       // Some accounts may not expose the endpoint; the ping itself still counts.
     }
 
+    const profile = await ctx.getProfile();
+    const mismatch = regimeMismatch(profile);
+
     return {
       ok: status === 200,
       baseUrl: ctx.config.baseUrl,
       bookkeepingSystemVersion: version,
       mode: ctx.config.readOnly ? "READ-ONLY" : ctx.config.dryRun ? "DRY-RUN" : "read/write",
+      vatProfile: {
+        regime: profile.regime,
+        source: profile.source,
+        evidence: profile.evidence,
+        ...(mismatch ? { warning: mismatch } : {}),
+      },
       receiptDirsAllowed: ctx.config.allowedReceiptDirs.length
         ? ctx.config.allowedReceiptDirs
         : "file tools disabled (SEVDESK_RECEIPT_DIRS not set)",
@@ -662,7 +671,7 @@ const createInvoice: ToolDef = {
             name: str("Position text."),
             quantity: { type: "number", description: "Quantity (default 1)." },
             price: { type: "number", description: "Unit price (net)." },
-            taxRate: { type: "number", description: "VAT rate; defaults to 19, or 0 for Kleinunternehmer." },
+            taxRate: { type: "number", description: "VAT rate; defaults to what the tax rule allows (19 for rule 1, 0 for 0%-only rules). Required for OSS rules." },
           },
           required: ["name", "price"],
           additionalProperties: false,
@@ -670,7 +679,7 @@ const createInvoice: ToolDef = {
       },
       invoiceDate: str("Invoice date, yyyy-mm-dd (default today)."),
       header: str("Optional invoice header text."),
-      taxRuleId: str("Revenue tax rule id (default 1, or 11 for Kleinunternehmer).", {
+      taxRuleId: str("Revenue tax rule id. Default follows the account's VAT regime: 1 (regular) or 11 (§19 Kleinunternehmer); required if the regime cannot be detected.", {
         // Model_Invoice.taxRule per the sevDesk spec — invoices accept the OSS
         // and §18b rules that vouchers refuse, and not the guidance-only 22.
         enum: ["1", "2", "3", "4", "5", "11", "17", "18", "19", "20", "21"],
@@ -686,9 +695,28 @@ const createInvoice: ToolDef = {
     const positions = Array.isArray(args.positions) ? (args.positions as Row[]) : [];
     if (positions.length === 0) throw new Error("At least one position is required.");
 
-    const ruleId =
-      optString(args, "taxRuleId") ?? (ctx.config.kleinunternehmer ? "11" : "1");
-    const defaultRate = ctx.config.kleinunternehmer ? 0 : 19;
+    // The regime only chooses the default RULE; the rule then dictates the
+    // default rate. An account whose regime cannot be detected gets no
+    // silent default — a wrong guess is a wrong legal document either way.
+    let ruleId = optString(args, "taxRuleId");
+    if (!ruleId) {
+      const profile = await ctx.getProfile();
+      if (profile.regime === "unknown") {
+        throw new Error(
+          "Cannot choose a tax rule: the account's VAT regime is unknown " +
+            `(${profile.evidence}). Pass taxRuleId explicitly — 1 for regular VAT, ` +
+            "11 for §19 Kleinunternehmer — or set SEVDESK_VAT_REGIME.",
+        );
+      }
+      ruleId = profile.regime === "kleinunternehmer" ? "11" : "1";
+    }
+    const rule = TAX_RULES[ruleId as TaxRuleId];
+    if (!rule || rule.side !== "revenue" || ruleId === "22") {
+      throw new Error(`taxRuleId '${ruleId}' is not a usable invoice revenue rule.`);
+    }
+    // OSS rules have destination-dependent rates — no default is safe.
+    const defaultRate =
+      rule.allowedRates === null ? null : (rule.allowedRates as readonly number[]).includes(19) ? 19 : 0;
     const date = optString(args, "invoiceDate") ?? ymd(new Date());
 
     const invoicePosSave = positions.map((p, i) => {
@@ -699,13 +727,19 @@ const createInvoice: ToolDef = {
       if (p.taxRate !== undefined && typeof p.taxRate !== "number") {
         throw new Error(`Position ${i + 1}: taxRate must be a number when given.`);
       }
+      if (p.taxRate === undefined && defaultRate === null) {
+        throw new Error(
+          `Position ${i + 1}: taxRate is required with rule ${ruleId} ("${rule.label}") — ` +
+            "One Stop Shop rates depend on the destination country.",
+        );
+      }
       return {
         objectName: "InvoicePos",
         mapAll: true,
         name: String(p.name ?? ""),
         quantity,
         price: num(p.price),
-        taxRate: typeof p.taxRate === "number" ? p.taxRate : defaultRate,
+        taxRate: typeof p.taxRate === "number" ? p.taxRate : (defaultRate as number),
         unity: { id: 1, objectName: "Unity" },
       };
     });
@@ -721,10 +755,13 @@ const createInvoice: ToolDef = {
         currency: optString(args, "currency") ?? "EUR",
         contact: { id: Number(contactId), objectName: "Contact" },
         taxRule: { id: ruleId, objectName: "TaxRule" },
-        taxRate: defaultRate,
-        taxText: ctx.config.kleinunternehmer
-          ? "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
-          : `Umsatzsteuer ${defaultRate}%`,
+        taxRate: defaultRate ?? num(invoicePosSave[0]?.taxRate),
+        taxText:
+          ruleId === "11"
+            ? "Gemäß § 19 UStG wird keine Umsatzsteuer berechnet."
+            : defaultRate && defaultRate > 0
+              ? `Umsatzsteuer ${defaultRate}%`
+              : rule.label,
         discount: 0,
         ...(optString(args, "header") ? { header: optString(args, "header") } : {}),
       },

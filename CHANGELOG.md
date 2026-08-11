@@ -2,6 +2,24 @@
 
 ## Unreleased
 
+- Generalized VAT-regime handling: `SEVDESK_VAT_REGIME`
+  (`regular` / `kleinunternehmer` / `auto`, default `auto`) replaces the
+  Kleinunternehmer boolean. `auto` infers the regime from the newest
+  invoices (taxRule 11 / `smallSettlement` / §19 taxText — works on both
+  bookkeeping generations); `sevdesk_ping` reports the verdict with
+  evidence. `SEVDESK_KLEINUNTERNEHMER` stays honored, marked deprecated.
+- Hardened against misconfiguration: an explicit regime that contradicts
+  the ledger becomes a `vat_regime_mismatch` audit finding (config still
+  wins — loudly). With the regime unknown, `sevdesk_create_invoice`
+  refuses to guess a tax rule instead of silently defaulting; audit
+  suggestions carry both labeled branches.
+- Invoice tax defaults now follow the chosen *rule*, not the regime: 0 %
+  rules (Ausfuhr, §4, §13b …) no longer get a silent 19 % default, and
+  OSS rules require explicit per-position rates.
+- Server `instructions` (MCP-native usage guidance for every client) and
+  a shipped Agent Skill (`skills/sevdesk-bookkeeping`) with the
+  bookkeeping workflows — monthly close, receipt triage, §13b checks.
+
 - MCP protocol revision 2026-07-28: migrated from `@modelcontextprotocol/sdk`
   1.x to the v2 SDK (`@modelcontextprotocol/server` 2.0). Modern clients get
   stateless per-request envelopes and a cacheable tool listing

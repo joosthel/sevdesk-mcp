@@ -2,10 +2,13 @@ import { isAbsolute, resolve, sep } from "node:path";
 
 import type { SevdeskClient } from "../client.js";
 import type { Config } from "../config.js";
+import type { VatProfile } from "./profile.js";
 
 export interface ToolContext {
   client: SevdeskClient;
   config: Config;
+  /** Lazy once-per-process VAT-regime resolution; never throws. */
+  getProfile: () => Promise<VatProfile>;
 }
 
 /** Plain JSON — the SDK's tool schema type accepts nothing looser. */

@@ -27,12 +27,38 @@ import {
   type ToolContext,
   type ToolDef,
 } from "../lib/tool.js";
+import { regimeMismatch, type VatRegime } from "../lib/profile.js";
 
 /* ------------------------------------------------------------------ */
 /* shared helpers                                                      */
 /* ------------------------------------------------------------------ */
 
 type Row = Record<string, unknown>;
+
+/**
+ * §13b advice differs by regime: with input-tax deduction the reverse charge
+ * nets to zero; a Kleinunternehmer cannot deduct, so the VAT is payable.
+ * With the regime unknown, both branches are given, labeled.
+ */
+function reverseChargeAdvice(regime: VatRegime): string {
+  const ku =
+    "taxRule 13 (§13b ohne Vorsteuerabzug — as Kleinunternehmer you cannot deduct " +
+    "the input tax, so this VAT is actually payable). Domestic 0 % expenses belong " +
+    "on taxRule 10.";
+  const regular =
+    "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
+    "taxRule 13 (without input-tax deduction) — or taxRule 8 for intra-EU goods.";
+  const advice =
+    regime === "kleinunternehmer"
+      ? ku
+      : regime === "regular"
+        ? regular
+        : `if regular VAT: ${regular} If §19 Kleinunternehmer: ${ku}`;
+  return (
+    `If this is a service from a supplier established abroad, it is Reverse Charge: ${advice} ` +
+    "Otherwise confirm the supplier really invoices without VAT."
+  );
+}
 
 /** Run `worker` over `items` with bounded concurrency. */
 async function mapLimit<T, R>(items: T[], limit: number, worker: (item: T) => Promise<R>): Promise<R[]> {
@@ -255,16 +281,32 @@ const auditVat: ToolDef = {
     // them concurrently. Without positions there are no rate-based findings,
     // so the contact and guidance lookups are skipped entirely.
     const details = withPositions && vouchers.length > 0;
-    const [posResult, contactResult, guidance] = await Promise.all([
+    const [posResult, contactResult, guidance, profile] = await Promise.all([
       details ? fetchPositions(ctx, vouchers) : { positions: new Map<string, Row[]>(), warnings: [] },
       details ? fetchSupplierCountries(ctx) : { countries: new Map<string, string>(), warnings: [] },
       details ? fetchGuidance(ctx, sides) : { byAccountId: null, warnings: [] },
+      ctx.getProfile(),
     ]);
     const { positions } = posResult;
     const { countries } = contactResult;
     const warnings = [...posResult.warnings, ...contactResult.warnings, ...guidance.warnings];
 
     const findings: Finding[] = [];
+
+    // Configuration that contradicts the ledger is itself an audit finding —
+    // every regime-dependent suggestion below inherits its bias.
+    const mismatch = regimeMismatch(profile);
+    if (mismatch) {
+      findings.push({
+        severity: "high",
+        code: "vat_regime_mismatch",
+        voucherId: "",
+        voucher: "account configuration",
+        detail: mismatch,
+        suggestion:
+          "Resolve the contradiction before trusting regime-dependent suggestions in this audit.",
+      });
+    }
     const bySupplier = new Map<string, { rules: Set<string>; names: Set<string> }>();
 
     for (const v of vouchers) {
@@ -353,15 +395,7 @@ const auditVat: ToolDef = {
             voucherId: id,
             voucher: label,
             detail: `Booked as ${bookedAs} but every position carries 0 % VAT` + hint,
-            suggestion: ctx.config.kleinunternehmer
-              ? "If this is a service from a supplier established abroad, it is Reverse Charge: " +
-                "taxRule 13 (§13b ohne Vorsteuerabzug — as Kleinunternehmer you cannot deduct " +
-                "the input tax, so this VAT is actually payable). Domestic 0 % expenses belong " +
-                "on taxRule 10. Otherwise confirm the supplier really invoices without VAT."
-              : "If this is a service from a supplier established abroad, it is Reverse Charge: " +
-                "taxRule 12 (§13b Abs. 2, with input-tax deduction), taxRule 14 (§13b Abs. 1, EU), " +
-                "taxRule 13 (without input-tax deduction) — or taxRule 8 for intra-EU goods. " +
-                "Otherwise confirm the supplier really invoices without VAT.",
+            suggestion: reverseChargeAdvice(profile.regime),
           });
         } else if (side === "revenue" && effectiveRule === "1") {
           findings.push({
@@ -552,9 +586,10 @@ const reverseChargeReport: ToolDef = {
   async handler(args, ctx) {
     const period = readPeriod(args);
     const rate = optNumber(args, "rate") ?? 19;
-    const [vouchers, { countries, warnings }] = await Promise.all([
+    const [vouchers, { countries, warnings }, profile] = await Promise.all([
       fetchVouchers(ctx, period, optNumber(args, "maxVouchers") ?? 2000),
       fetchSupplierCountries(ctx),
+      ctx.getProfile(),
     ]);
 
     const deductible: Row[] = [];
@@ -635,10 +670,13 @@ const reverseChargeReport: ToolDef = {
         wouldAddVat: round2((suspectedBase * rate) / 100),
         note:
           "These are booked as plain expenses with 0 % VAT and have a foreign-looking supplier. " +
-          (ctx.config.kleinunternehmer
+          (profile.regime === "kleinunternehmer"
             ? "As Kleinunternehmer the correct rule is 13 (§13b ohne Vorsteuerabzug) — that VAT " +
               "would actually be payable. "
-            : "") +
+            : profile.regime === "unknown"
+              ? "If the account is a §19 Kleinunternehmer, the correct rule is 13 (ohne " +
+                "Vorsteuerabzug — VAT payable); under regular VAT, rules 12/14 net to zero. "
+              : "") +
           "Verify each one — the heuristic reads company suffixes, it does not know where a " +
           "supplier is established.",
         vouchers: suspected,

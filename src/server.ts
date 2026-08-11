@@ -22,6 +22,15 @@ export function buildServer(ctx: ToolContext): Server {
     { name: "sevdesk-mcp", version: VERSION },
     {
       capabilities: { tools: {} },
+      instructions:
+        `sevDesk accounting (German SMB bookkeeping) for AI agents. ` +
+        `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes create drafts only"}. ` +
+        `Start with sevdesk_ping: it verifies the token and reports the account's ` +
+        `bookkeeping generation and detected VAT regime (regular vs §19 Kleinunternehmer) ` +
+        `with evidence — tax defaults and audit advice follow that regime. ` +
+        `Prefer the curated sevdesk_* tools; for anything else use sevdesk_call after ` +
+        `sevdesk_list_operations / sevdesk_describe_operation. Every write accepts ` +
+        `dryRun:true for a preview. Dates are yyyy-mm-dd; amounts EUR unless stated.`,
       // The tool list is fixed for the lifetime of the process (read-only
       // filtering depends only on startup config), so 2026-era clients may
       // cache it. Private: the listing varies with this deployment's config.

@@ -114,6 +114,19 @@ Die Tools lassen sich kombinieren — alltägliche Buchhaltungsaufgaben, jeweils
 - **Vor der Voranmeldung:** *„Führe die USt-Prüfung und den §13b-Report fürs Quartal aus und fasse zusammen, was mein Steuerberater wissen sollte."*
 - **Alles andere:** *„Ruf die sevDesk-API auf: …"* — Aufträge, Gutschriften, Exporte, Artikel und jeder weitere Endpunkt sind über den Katalog erreichbar.
 
+### Agent Skill (optional)
+
+Das Paket liefert einen [Agent Skill](https://agentskills.io) mit, der
+diese Abläufe ausformuliert — Monatsabschluss-Reihenfolge, Beleg-Triage,
+§13b-Prüfung, Interpretation der Audit-Findings. Für Claude Code:
+
+```bash
+cp -r node_modules/sevdesk-mcp/skills/sevdesk-bookkeeping .claude/skills/
+```
+
+Clients ohne Skill-Unterstützung verlieren nichts: die `instructions`
+des Servers und die Tool-Beschreibungen tragen das Wesentliche.
+
 ## Konfiguration
 
 | Variable | Standard | Zweck |
@@ -121,7 +134,8 @@ Die Tools lassen sich kombinieren — alltägliche Buchhaltungsaufgaben, jeweils
 | `SEVDESK_API_TOKEN` | *(erforderlich)* | Dein sevDesk-API-Token |
 | `SEVDESK_READ_ONLY` | `false` | Blendet Schreib-Tools aus; `sevdesk_call` bleibt sichtbar, verweigert aber schreibende Operationen beim Aufruf |
 | `SEVDESK_DRY_RUN` | `false` | Zeigt, was ein Schreibzugriff senden *würde*, ohne zu senden |
-| `SEVDESK_KLEINUNTERNEHMER` | `false` | §19 UStG: Prüfungs-Empfehlungen verweisen auf das KU-Regelset (13/10/11), neue Rechnungen nutzen Regel 11 mit 0 % |
+| `SEVDESK_VAT_REGIME` | `auto` | `regular`, `kleinunternehmer` (§19 UStG) oder `auto`. `auto` erkennt das Regime aus den letzten Rechnungen; `sevdesk_ping` zeigt Ergebnis und Begründung. Steuerregel-Defaults und Prüfungs-Empfehlungen folgen dem Regime. Ein expliziter Wert, der dem Buchungsbestand widerspricht, wird als Prüfungs-Finding gemeldet — nie stillschweigend übernommen |
+| `SEVDESK_KLEINUNTERNEHMER` | `false` | Veraltet — bitte `SEVDESK_VAT_REGIME=kleinunternehmer` verwenden. Wird weiter beachtet, solange `SEVDESK_VAT_REGIME` nicht gesetzt ist |
 | `SEVDESK_RECEIPT_DIRS` | *(nicht gesetzt — Datei-Tools deaktiviert)* | Doppelpunkt-getrennte Positivliste der Verzeichnisse für die Beleg-Datei-Tools |
 | `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | API-Host überschreiben |
 | `SEVDESK_TIMEOUT_MS` | `30000` | Timeout pro Anfrage |

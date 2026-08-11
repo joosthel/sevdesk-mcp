@@ -114,6 +114,22 @@ The tools compose — these are everyday bookkeeping jobs, each a single prompt:
 - **Before the VAT return:** *"Run the VAT audit and the §13b report for the quarter and summarize what my Steuerberater should know."*
 - **Anything else:** *"Call the sevDesk API: …"* — orders, credit notes, exports, parts and every other endpoint are reachable through the catalogue.
 
+### Agent Skill (optional)
+
+The package ships an [Agent Skill](https://agentskills.io) with these
+workflows spelled out — monthly close order, receipt triage, §13b
+investigation, audit-finding interpretation — so agents load the
+know-how on demand instead of rediscovering it each session. For Claude
+Code, copy it next to your project:
+
+```bash
+cp -r node_modules/sevdesk-mcp/skills/sevdesk-bookkeeping .claude/skills/
+```
+
+(or copy from a clone of this repo). Clients without skill support lose
+nothing: the server's own `instructions` and tool descriptions carry the
+essentials.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -121,7 +137,8 @@ The tools compose — these are everyday bookkeeping jobs, each a single prompt:
 | `SEVDESK_API_TOKEN` | *(required)* | Your sevDesk API token |
 | `SEVDESK_READ_ONLY` | `false` | Hide write tools; `sevdesk_call` stays listed but refuses mutating operations at call time |
 | `SEVDESK_DRY_RUN` | `false` | Show what a write *would* send, without sending it |
-| `SEVDESK_KLEINUNTERNEHMER` | `false` | §19 UStG small-business scheme: audit suggestions point to the KU rule set (13/10/11), new invoices default to rule 11 at 0 % |
+| `SEVDESK_VAT_REGIME` | `auto` | `regular`, `kleinunternehmer` (§19 UStG) or `auto`. `auto` infers the regime from your recent invoices; `sevdesk_ping` reports what was detected and why. Tax-rule defaults and audit suggestions follow the regime. An explicit value that contradicts the ledger is reported as an audit finding, never silently trusted |
+| `SEVDESK_KLEINUNTERNEHMER` | `false` | Deprecated — use `SEVDESK_VAT_REGIME=kleinunternehmer`. Still honored when `SEVDESK_VAT_REGIME` is unset |
 | `SEVDESK_RECEIPT_DIRS` | *(unset — file tools disabled)* | Colon-separated allowlist of directories the receipt file tools may read and write |
 | `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | Override the API host |
 | `SEVDESK_TIMEOUT_MS` | `30000` | Per-request timeout |

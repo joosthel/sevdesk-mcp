@@ -4,8 +4,20 @@ import { join } from "node:path";
 
 import { describe, expect, it } from "vitest";
 
+import type { VatProfile } from "../src/lib/profile.js";
 import type { ToolContext } from "../src/lib/tool.js";
 import { resourceTools } from "../src/tools/resources.js";
+
+function stubProfile(
+  regime: "regular" | "kleinunternehmer" | "unknown" = "regular",
+): VatProfile {
+  return {
+    regime,
+    source: regime === "unknown" ? "unresolved" : "env",
+    evidence: "test stub",
+    ledger: null,
+  };
+}
 
 const ping = resourceTools.find((t) => t.name === "sevdesk_ping")!;
 const setTaxRule = resourceTools.find((t) => t.name === "sevdesk_set_tax_rule")!;
@@ -32,6 +44,7 @@ function ctxWith(
       dryRun: false,
       allowedReceiptDirs: [],
     },
+    getProfile: async () => stubProfile(),
   } as unknown as ToolContext;
 }
 
@@ -111,6 +124,7 @@ function voucherCtx(v: Row | null, opts: { dryRun?: boolean } = {}) {
   const ctx = {
     client,
     config: { readOnly: false, dryRun: opts.dryRun ?? false, allowedReceiptDirs: [] },
+    getProfile: async () => stubProfile(),
   } as unknown as ToolContext;
   return { ctx, sent };
 }
@@ -205,6 +219,7 @@ describe("sevdesk_receipt_guidance", () => {
 function invoiceCtx(
   invoice: Row | null,
   config: Record<string, unknown> = {},
+  regime: "regular" | "kleinunternehmer" | "unknown" = "regular",
 ) {
   const sent: Array<{ method: string; path: string; body?: unknown; query?: unknown }> = [];
   const client = {
@@ -249,10 +264,10 @@ function invoiceCtx(
     config: {
       readOnly: false,
       dryRun: false,
-      kleinunternehmer: false,
       allowedReceiptDirs: [],
       ...config,
     },
+    getProfile: async () => stubProfile(regime),
   } as unknown as ToolContext;
   return { ctx, sent };
 }
@@ -299,7 +314,7 @@ describe("sevdesk_create_invoice", () => {
   });
 
   it("uses the §19 rule for Kleinunternehmer", async () => {
-    const { ctx, sent } = invoiceCtx(null, { kleinunternehmer: true });
+    const { ctx, sent } = invoiceCtx(null, {}, "kleinunternehmer");
     await createInvoice.handler(
       { contactId: "77", positions: [{ name: "Consulting", price: 100 }] },
       ctx,

@@ -4,13 +4,18 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { catalog } from "./catalog.js";
 import { SevdeskClient } from "./client.js";
 import { loadConfig } from "./config.js";
+import { createProfileResolver } from "./lib/profile.js";
 import type { ToolContext } from "./lib/tool.js";
 import { VERSION, buildServer, tools } from "./server.js";
 
 async function main(): Promise<void> {
   const config = loadConfig();
   const client = new SevdeskClient(config);
-  const ctx: ToolContext = { client, config };
+  const ctx: ToolContext = {
+    client,
+    config,
+    getProfile: createProfileResolver(client, config),
+  };
 
   // serveStdio negotiates the protocol era per connection: 2026-07-28
   // clients get the stateless envelope, 2025-era clients the classic
