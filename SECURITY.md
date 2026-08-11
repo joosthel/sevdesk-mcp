@@ -27,7 +27,7 @@ guard lives in this server, not in the model's goodwill.
   disabled until `SEVDESK_RECEIPT_DIRS` names an explicit directory allowlist;
   paths outside it are refused.
 - **Minimal supply chain.** One runtime dependency
-  (`@modelcontextprotocol/sdk`, the official MCP SDK), a committed lockfile,
+  (`@modelcontextprotocol/server`, the official MCP SDK), a committed lockfile,
   `npm ci` in CI, and GitHub Actions pinned to commit SHAs. No postinstall
   scripts, no telemetry, no network calls except to the sevDesk API.
 

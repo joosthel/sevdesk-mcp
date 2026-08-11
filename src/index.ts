@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { serveStdio } from "@modelcontextprotocol/server/stdio";
 
 import { catalog } from "./catalog.js";
 import { SevdeskClient } from "./client.js";
@@ -12,8 +12,12 @@ async function main(): Promise<void> {
   const client = new SevdeskClient(config);
   const ctx: ToolContext = { client, config };
 
-  const server = buildServer(ctx);
-  await server.connect(new StdioServerTransport());
+  // serveStdio negotiates the protocol era per connection: 2026-07-28
+  // clients get the stateless envelope, 2025-era clients the classic
+  // initialize handshake — same server instance either way.
+  serveStdio(() => buildServer(ctx), {
+    onerror: (err) => console.error(err.message),
+  });
 
   // stderr only — stdout carries the MCP protocol.
   console.error(

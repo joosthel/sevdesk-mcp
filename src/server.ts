@@ -1,8 +1,4 @@
-import { Server } from "@modelcontextprotocol/sdk/server/index.js";
-import {
-  CallToolRequestSchema,
-  ListToolsRequestSchema,
-} from "@modelcontextprotocol/sdk/types.js";
+import { Server } from "@modelcontextprotocol/server";
 
 import type { ToolContext, ToolDef } from "./lib/tool.js";
 import { auditTools } from "./tools/audit.js";
@@ -24,10 +20,16 @@ export function buildServer(ctx: ToolContext): Server {
 
   const server = new Server(
     { name: "sevdesk-mcp", version: VERSION },
-    { capabilities: { tools: {} } },
+    {
+      capabilities: { tools: {} },
+      // The tool list is fixed for the lifetime of the process (read-only
+      // filtering depends only on startup config), so 2026-era clients may
+      // cache it. Private: the listing varies with this deployment's config.
+      cacheHints: { "tools/list": { ttlMs: 3_600_000, cacheScope: "private" } },
+    },
   );
 
-  server.setRequestHandler(ListToolsRequestSchema, async () => ({
+  server.setRequestHandler("tools/list", async () => ({
     tools: tools
       // Hide write tools entirely in read-only mode so they cannot be attempted.
       // Tools with listInReadOnly decide per call and stay visible.
@@ -44,7 +46,7 @@ export function buildServer(ctx: ToolContext): Server {
       })),
   }));
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler("tools/call", async (request) => {
     const { name, arguments: rawArgs } = request.params;
     const tool = byName.get(name);
     if (!tool) {

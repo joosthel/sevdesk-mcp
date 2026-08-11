@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- MCP protocol revision 2026-07-28: migrated from `@modelcontextprotocol/sdk`
+  1.x to the v2 SDK (`@modelcontextprotocol/server` 2.0). Modern clients get
+  stateless per-request envelopes and a cacheable tool listing
+  (`ttlMs` 1 h, scope private); 2025-era clients are still served through
+  the classic initialize handshake — same server instance, negotiated per
+  connection by `serveStdio`.
+- `server.json`: registry schema pointer bumped 2025-09-29 → 2025-12-11
+  (validated; no field changes needed).
 - Node.js 20 reached end-of-life (April 2026): minimum engine is now
   Node 22, CI tests on 22 and 24, GitHub Actions bumped to current
   releases (still SHA-pinned).

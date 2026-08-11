@@ -8,13 +8,22 @@ export interface ToolContext {
   config: Config;
 }
 
+/** Plain JSON — the SDK's tool schema type accepts nothing looser. */
+export type JsonValue =
+  | string
+  | number
+  | boolean
+  | null
+  | JsonValue[]
+  | { [key: string]: JsonValue };
+
 export interface ToolDef {
   name: string;
   title?: string;
   description: string;
   inputSchema: {
     type: "object";
-    properties: Record<string, unknown>;
+    properties: Record<string, JsonValue>;
     required?: string[];
     additionalProperties?: boolean;
   };
@@ -55,19 +64,19 @@ export function assertAllowedPath(ctx: ToolContext, filePath: string): string {
   return target;
 }
 
-export const str = (description: string, extra: Record<string, unknown> = {}) => ({
+export const str = (description: string, extra: Record<string, JsonValue> = {}) => ({
   type: "string",
   description,
   ...extra,
 });
 
-export const int = (description: string, extra: Record<string, unknown> = {}) => ({
+export const int = (description: string, extra: Record<string, JsonValue> = {}) => ({
   type: "integer",
   description,
   ...extra,
 });
 
-export const bool = (description: string, extra: Record<string, unknown> = {}) => ({
+export const bool = (description: string, extra: Record<string, JsonValue> = {}) => ({
   type: "boolean",
   description,
   ...extra,
