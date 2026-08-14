@@ -2,6 +2,7 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, extname, resolve } from "node:path";
 
 import {
+  INVOICE_STATUS,
   TAX_RULES,
   VOUCHER_STATUS,
   type VoucherSide,
@@ -1114,13 +1115,6 @@ const reconcileTransactions: ToolDef = {
 /* 7. receivables aging                                                */
 /* ------------------------------------------------------------------ */
 
-const INVOICE_STATUS: Record<string, string> = {
-  "50": "deaktivierte Abo-Rechnung",
-  "100": "Entwurf",
-  "200": "offen",
-  "750": "teilbezahlt",
-  "1000": "bezahlt",
-};
 
 const AGING_BUCKETS = ["current", "1-30", "31-60", "61-90", ">90"] as const;
 

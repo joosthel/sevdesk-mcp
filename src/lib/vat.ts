@@ -231,6 +231,14 @@ export const VOUCHER_STATUS: Record<string, string> = {
   "1000": "bezahlt",
 };
 
+export const INVOICE_STATUS: Record<string, string> = {
+  "50": "deaktivierte Abo-Rechnung",
+  "100": "Entwurf",
+  "200": "offen",
+  "750": "teilbezahlt",
+  "1000": "bezahlt",
+};
+
 export interface TaxTreatment {
   ruleId: TaxRuleId | null;
   /** Modern rule the deprecated taxType maps to, when only a taxType was present. */

@@ -82,6 +82,10 @@ Run in this order; each step's output feeds the next conversation turn:
 
 ## Token discipline
 
+- For totals ("revenue in Q2", "expenses by supplier", "how many open
+  invoices") use `sevdesk_summarize` — it aggregates server-side and
+  returns groups, never rows. Reach for the list tools only when you
+  need the individual documents.
 - Always pass `from`/`to` periods and `limit` — unbounded sweeps are the
   main token sink.
 - `sevdesk_list_operations` / `sevdesk_describe_operation` before

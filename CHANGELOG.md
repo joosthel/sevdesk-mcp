@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+- Duplicate-write protection: a 5xx or network failure on a write is no
+  longer retried — the request may already have reached sevDesk, so a
+  replay could create a duplicate draft. A 429 stays retryable for every
+  method (a throttled call never executed). `Retry-After` is now clamped
+  to 250 ms–30 s (and understood in HTTP-date form), backoff is jittered
+  and capped.
+- Client-side rate limiter (token bucket, `SEVDESK_RATE_LIMIT`
+  requests/second, default 4, `0` disables): bursty audit fan-outs are
+  paced instead of colliding with sevDesk's throttle.
+- `sevdesk_summarize`: aggregate invoices or vouchers over a period
+  without returning rows — counts plus net/tax/gross sums grouped by
+  month, status, contact or nothing, bounded output however large the
+  ledger (groups beyond `maxGroups` fold into one "(andere)" entry).
+- API errors now carry a `kind` (validation / auth / not_found /
+  rate_limited / upstream / network) and surface sevDesk's own error
+  message instead of a raw JSON dump.
+- Tool listing carries standard MCP annotations
+  (`readOnlyHint`/`destructiveHint`/`openWorldHint`) so clients can
+  shape their confirmation UX.
+- `SEVDESK_DEBUG=true` logs method/path/status to stderr — never query
+  strings, bodies or the token.
+
 - Generalized VAT-regime handling: `SEVDESK_VAT_REGIME`
   (`regular` / `kleinunternehmer` / `auto`, default `auto`) replaces the
   Kleinunternehmer boolean. `auto` infers the regime from the newest

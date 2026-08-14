@@ -33,6 +33,12 @@
           "description": "VAT regime: regular, kleinunternehmer (§19 UStG) or auto (default: infer from recent invoices)",
           "isRequired": false,
           "format": "string"
+        },
+        {
+          "name": "SEVDESK_RATE_LIMIT",
+          "description": "Client-side request pacing in requests/second (default 4; 0 disables)",
+          "isRequired": false,
+          "format": "number"
         }
       ]
     }

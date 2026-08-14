@@ -386,3 +386,82 @@ describe("sevdesk_mark_invoice_sent", () => {
     expect(sent.filter((c) => c.method === "PUT")).toEqual([]);
   });
 });
+
+describe("sevdesk_summarize", () => {
+  const summarize = resourceTools.find((t) => t.name === "sevdesk_summarize")!;
+
+  function summarizeCtx(rows: Row[]): ToolContext {
+    return {
+      client: { async getAll() { return rows; } },
+      config: { readOnly: true, dryRun: false, allowedReceiptDirs: [] },
+      getProfile: async () => stubProfile(),
+    } as unknown as ToolContext;
+  }
+
+  const invoices: Row[] = [
+    { invoiceDate: "2026-07-05", status: "200", sumNet: 100, sumTax: 19, sumGross: 119, contact: { name: "Alpha" } },
+    { invoiceDate: "2026-07-20", status: "200", sumNet: 200, sumTax: 38, sumGross: 238, contact: { name: "Beta" } },
+    { invoiceDate: "2026-06-01", status: "1000", sumNet: 50, sumTax: 9.5, sumGross: 59.5, contact: { name: "Alpha" } },
+  ];
+
+  it("groups invoices by month with correct sums and no rows in the output", async () => {
+    const out = (await summarize.handler({ kind: "invoices" }, summarizeCtx(invoices))) as {
+      total: { count: number; net: number; gross: number };
+      groups: Array<{ key: string; count: number; gross: number }>;
+    };
+    expect(out.total.count).toBe(3);
+    expect(out.total.net).toBe(350);
+    expect(out.total.gross).toBe(416.5);
+    expect(out.groups.map((g) => g.key)).toEqual(["2026-06", "2026-07"]);
+    expect(out.groups[1]!.gross).toBe(357);
+    expect(JSON.stringify(out)).not.toContain("Alpha"); // aggregates only
+  });
+
+  it("decodes status codes into labels when grouping by status", async () => {
+    const out = (await summarize.handler(
+      { kind: "invoices", groupBy: "status" },
+      summarizeCtx(invoices),
+    )) as { groups: Array<{ key: string; count: number }> };
+    const keys = out.groups.map((g) => g.key).sort();
+    expect(keys).toEqual(["bezahlt", "offen"]);
+  });
+
+  it("filters by date range and reports scanned vs matched", async () => {
+    const out = (await summarize.handler(
+      { kind: "invoices", from: "2026-07-01", to: "2026-07-31" },
+      summarizeCtx(invoices),
+    )) as { scanned: number; matched: number; total: { count: number } };
+    expect(out.scanned).toBe(3);
+    expect(out.matched).toBe(2);
+    expect(out.total.count).toBe(2);
+  });
+
+  it("filters vouchers by side (expense vs revenue)", async () => {
+    const vouchers: Row[] = [
+      { voucherDate: "2026-07-01", status: "1000", creditDebit: "C", sumNet: 40, sumTax: 7.6, sumGross: 47.6, supplierName: "Hetzner" },
+      { voucherDate: "2026-07-02", status: "100", creditDebit: "D", sumNet: 500, sumTax: 95, sumGross: 595, supplierName: "Kunde" },
+    ];
+    const out = (await summarize.handler(
+      { kind: "vouchers", side: "expense", groupBy: "none" },
+      summarizeCtx(vouchers),
+    )) as { total: { count: number; gross: number } };
+    expect(out.total.count).toBe(1);
+    expect(out.total.gross).toBe(47.6);
+  });
+
+  it("folds groups beyond maxGroups into '(andere)' without losing the totals", async () => {
+    const out = (await summarize.handler(
+      { kind: "invoices", groupBy: "contact", maxGroups: 1 },
+      summarizeCtx(invoices),
+    )) as { total: { count: number }; groups: Array<{ key: string; count: number }> };
+    expect(out.groups.length).toBe(2); // top-1 + (andere)
+    expect(out.groups[1]!.key).toBe("(andere)");
+    expect(out.total.count).toBe(3); // nothing dropped
+  });
+
+  it("rejects an unknown kind", async () => {
+    await expect(summarize.handler({ kind: "contacts" }, summarizeCtx([]))).rejects.toThrow(
+      /kind must be/,
+    );
+  });
+});

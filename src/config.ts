@@ -16,6 +16,13 @@ export interface Config {
   vatRegimeSource: "env" | "legacy-env" | "default";
   requestTimeoutMs: number;
   maxRetries: number;
+  /**
+   * Client-side request pacing in requests/second (token bucket), so bursty
+   * fan-outs don't collide with sevDesk's throttle. 0 disables pacing.
+   */
+  rateLimitPerSec: number;
+  /** Log method/path/status to stderr — never query strings, bodies or the token. */
+  debug: boolean;
   /** Directories the audit tools are allowed to read receipt files from. */
   allowedReceiptDirs: string[];
 }
@@ -28,6 +35,13 @@ function bool(value: string | undefined, fallback = false): boolean {
 function int(value: string | undefined, fallback: number): number {
   const n = Number.parseInt(value ?? "", 10);
   return Number.isFinite(n) && n > 0 ? n : fallback;
+}
+
+/** Like {@link int} but fractional and with an explicit 0 meaning "disabled". */
+function rate(value: string | undefined, fallback: number): number {
+  if (value === undefined || value.trim() === "") return fallback;
+  const n = Number(value);
+  return Number.isFinite(n) && n >= 0 ? n : fallback;
 }
 
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
@@ -69,6 +83,8 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     vatRegimeSource,
     requestTimeoutMs: int(env.SEVDESK_TIMEOUT_MS, 30_000),
     maxRetries: int(env.SEVDESK_MAX_RETRIES, 3),
+    rateLimitPerSec: rate(env.SEVDESK_RATE_LIMIT, 4),
+    debug: bool(env.SEVDESK_DEBUG, false),
     allowedReceiptDirs: (env.SEVDESK_RECEIPT_DIRS ?? "")
       .split(":")
       .map((s) => s.trim())

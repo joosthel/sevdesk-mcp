@@ -2,6 +2,7 @@ import { readFile, stat, writeFile } from "node:fs/promises";
 import { basename, join } from "node:path";
 
 import {
+  INVOICE_STATUS,
   TAX_RULES,
   VOUCHER_STATUS,
   type TaxRuleId,
@@ -271,6 +272,137 @@ const listInvoices: ToolDef = {
       })
       .sort((a, b) => String(b.date).localeCompare(String(a.date)));
     return { total: rows.length, invoices: rows.slice(0, limit) };
+  },
+};
+
+const summarize: ToolDef = {
+  name: "sevdesk_summarize",
+  title: "Summarize invoices or vouchers (totals, not rows)",
+  description:
+    "Aggregate invoices or vouchers over a date range WITHOUT returning rows: counts plus " +
+    "net/tax/gross sums, grouped by month, status, contact or nothing. Use this for totals " +
+    "('revenue in Q2', 'expenses by supplier') instead of the list tools — the response stays " +
+    "small however large the ledger is. Read-only.",
+  mutating: false,
+  inputSchema: {
+    type: "object",
+    properties: {
+      kind: str("What to aggregate.", { enum: ["invoices", "vouchers"] }),
+      from: str("Start date, dd.mm.yyyy or yyyy-mm-dd."),
+      to: str("End date."),
+      groupBy: str("Grouping dimension (default month).", {
+        enum: ["month", "status", "contact", "none"],
+      }),
+      side: str("Vouchers only: expense (money out), revenue (money in) or any (default).", {
+        enum: ["expense", "revenue", "any"],
+      }),
+      maxGroups: int(
+        "Cap on returned groups; the remainder is folded into one '(andere)' entry (default 40).",
+      ),
+    },
+    required: ["kind"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const kind = requireString(args, "kind");
+    if (kind !== "invoices" && kind !== "vouchers") {
+      throw new Error(`kind must be 'invoices' or 'vouchers', not '${kind}'.`);
+    }
+    const p = period(args);
+    const groupBy = optString(args, "groupBy") ?? "month";
+    const side = optString(args, "side") ?? "any";
+    const maxGroups = Math.max(1, optNumber(args, "maxGroups") ?? 40);
+
+    const MAX_ITEMS = 10_000;
+    const rows =
+      kind === "invoices"
+        ? await ctx.client.getAll<Row>("/Invoice", { embed: "contact" }, { maxItems: MAX_ITEMS })
+        : await ctx.client.getAll<Row>("/Voucher", { embed: "supplier" }, { maxItems: MAX_ITEMS });
+    const truncated = rows.length >= MAX_ITEMS;
+
+    const statusMap = kind === "invoices" ? INVOICE_STATUS : VOUCHER_STATUS;
+    const keyOf = (r: Row, d: Date | null): string => {
+      switch (groupBy) {
+        case "none":
+          return "alle";
+        case "status":
+          return statusMap[String(r.status)] ?? String(r.status ?? "(unbekannt)");
+        case "contact":
+          return kind === "invoices"
+            ? String((r.contact as Row | undefined)?.name ?? r.addressName ?? "(ohne Kontakt)")
+            : String(r.supplierName ?? (r.supplier as Row | undefined)?.name ?? "(ohne Lieferant)");
+        default:
+          return d ? ymd(d).slice(0, 7) : "(ohne Datum)"; // YYYY-MM
+      }
+    };
+
+    const groups = new Map<string, { count: number; net: number; tax: number; gross: number }>();
+    let matched = 0;
+    for (const r of rows) {
+      const d = parseSevdeskDate(kind === "invoices" ? r.invoiceDate : r.voucherDate);
+      if (!within(d, p)) continue;
+      if (kind === "vouchers" && side !== "any" && voucherSide(r) !== side) continue;
+      matched++;
+      const g = groups.get(keyOf(r, d)) ?? { count: 0, net: 0, tax: 0, gross: 0 };
+      g.count++;
+      g.net += num(r.sumNet);
+      g.tax += num(r.sumTax);
+      g.gross += num(r.sumGross);
+      groups.set(keyOf(r, d), g);
+    }
+
+    const sorted = [...groups.entries()]
+      .map(([key, g]) => ({ key, count: g.count, net: g.net, tax: g.tax, gross: g.gross }))
+      .sort((a, b) => (groupBy === "month" ? a.key.localeCompare(b.key) : b.gross - a.gross));
+    // Bound the output: months keep the most recent, other dimensions the largest.
+    const dropped =
+      groupBy === "month" ? sorted.slice(0, -maxGroups) : sorted.slice(maxGroups);
+    const kept =
+      groupBy === "month"
+        ? sorted.slice(Math.max(0, sorted.length - maxGroups))
+        : sorted.slice(0, maxGroups);
+    if (dropped.length > 0) {
+      const other = { key: "(andere)", count: 0, net: 0, tax: 0, gross: 0 };
+      for (const g of dropped) {
+        other.count += g.count;
+        other.net += g.net;
+        other.tax += g.tax;
+        other.gross += g.gross;
+      }
+      kept.push(other);
+    }
+
+    const total = { count: 0, net: 0, tax: 0, gross: 0 };
+    for (const g of kept) {
+      total.count += g.count;
+      total.net += g.net;
+      total.tax += g.tax;
+      total.gross += g.gross;
+    }
+
+    return {
+      kind,
+      groupBy,
+      ...(kind === "vouchers" ? { side } : {}),
+      scanned: rows.length,
+      matched,
+      ...(truncated
+        ? { truncated: true, note: `Only the first ${MAX_ITEMS} rows were scanned.` }
+        : {}),
+      total: {
+        count: total.count,
+        net: round2(total.net),
+        tax: round2(total.tax),
+        gross: round2(total.gross),
+      },
+      groups: kept.map((g) => ({
+        key: g.key,
+        count: g.count,
+        net: round2(g.net),
+        tax: round2(g.tax),
+        gross: round2(g.gross),
+      })),
+    };
   },
 };
 
@@ -901,6 +1033,7 @@ export const resourceTools: ToolDef[] = [
   listVouchers,
   getVoucher,
   listInvoices,
+  summarize,
   listContacts,
   listTransactions,
   uploadVoucherFile,

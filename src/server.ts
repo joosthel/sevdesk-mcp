@@ -52,6 +52,13 @@ export function buildServer(ctx: ToolContext): Server {
             ? " ⚠️ This tool can change data in sevDesk."
             : ""),
         inputSchema: t.inputSchema,
+        // Standard MCP hints so clients can shape confirmation UX. Writes are
+        // never destructive here: they create drafts or flip reversible flags.
+        annotations: {
+          readOnlyHint: !t.mutating,
+          destructiveHint: false,
+          openWorldHint: true,
+        },
       })),
   }));
 

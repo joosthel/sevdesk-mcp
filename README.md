@@ -77,7 +77,7 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 
 ## Tools
 
-**23 tools cover all 151 API operations.**
+**24 tools cover all 151 API operations.**
 
 ### Audit
 
@@ -93,9 +93,9 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 
 ### Everyday
 
-`sevdesk_ping` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_receipt_guidance` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher` · `sevdesk_set_tax_rule` · `sevdesk_create_invoice` · `sevdesk_get_invoice_pdf` · `sevdesk_mark_invoice_sent`
+`sevdesk_ping` · `sevdesk_summarize` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_receipt_guidance` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher` · `sevdesk_set_tax_rule` · `sevdesk_create_invoice` · `sevdesk_get_invoice_pdf` · `sevdesk_mark_invoice_sent`
 
-Highlights: `sevdesk_receipt_guidance` answers "which booking account / tax rule / rate combinations does sevDesk actually accept" from sevDesk's own validation table. `sevdesk_set_tax_rule` rebooks a draft voucher onto a different VAT rule with guardrails. `sevdesk_create_invoice` always creates **drafts** — nothing reaches a customer without review. `sevdesk_get_invoice_pdf` saves the rendered PDF without touching the invoice's send state.
+Highlights: `sevdesk_summarize` aggregates invoices or vouchers server-side — counts and net/tax/gross sums grouped by month, status or contact — so questions like "revenue in Q2" or "expenses by supplier" cost a few hundred tokens however large the ledger is. `sevdesk_receipt_guidance` answers "which booking account / tax rule / rate combinations does sevDesk actually accept" from sevDesk's own validation table. `sevdesk_set_tax_rule` rebooks a draft voucher onto a different VAT rule with guardrails. `sevdesk_create_invoice` always creates **drafts** — nothing reaches a customer without review. `sevdesk_get_invoice_pdf` saves the rendered PDF without touching the invoice's send state.
 
 ### Full coverage
 
@@ -142,7 +142,9 @@ essentials.
 | `SEVDESK_RECEIPT_DIRS` | *(unset — file tools disabled)* | Colon-separated allowlist of directories the receipt file tools may read and write |
 | `SEVDESK_BASE_URL` | `https://my.sevdesk.de/api/v1` | Override the API host |
 | `SEVDESK_TIMEOUT_MS` | `30000` | Per-request timeout |
-| `SEVDESK_MAX_RETRIES` | `3` | Retries on 429/5xx, with backoff and `Retry-After` |
+| `SEVDESK_MAX_RETRIES` | `3` | Retries with jittered backoff and a clamped `Retry-After`. A 429 is always retried (the throttled call never ran); a 5xx or network failure is retried **only for reads** — a write is never replayed on an ambiguous failure, so a timeout cannot create a duplicate draft |
+| `SEVDESK_RATE_LIMIT` | `4` | Client-side pacing in requests/second (token bucket), so bursty audit fan-outs don't collide with sevDesk's throttle. `0` disables pacing |
+| `SEVDESK_DEBUG` | `false` | Log `METHOD /path -> status` to stderr — never query strings, bodies or the token |
 
 The threat model, guarantees and vulnerability reporting are documented in [SECURITY.md](SECURITY.md).
 
