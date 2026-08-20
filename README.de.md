@@ -143,6 +143,15 @@ des Servers und die Tool-Beschreibungen tragen das Wesentliche.
 | `SEVDESK_RATE_LIMIT` | `4` | Clientseitige Drosselung in Requests/Sekunde (Token-Bucket), damit Audit-Abfragesalven nicht mit sevDesks Limit kollidieren. `0` deaktiviert |
 | `SEVDESK_DEBUG` | `false` | Loggt `METHOD /pfad -> status` auf stderr — nie Query-Strings, Bodies oder den Token |
 
+Diese Variablen gehören in den `env`-Block deines MCP-Clients — das ist der
+unterstützte Weg und der, den der Client kontrolliert. Für Läufe außerhalb eines
+Clients (`npm run dev`, `node dist/index.js` aus einem Clone) kopierst du
+`.env.example` nach `.env` ins Paketverzeichnis; der Server liest die Datei beim
+Start. Gelesen wird immer aus dem Paketverzeichnis, nie aus dem Arbeitsverzeichnis,
+und echte Umgebungsvariablen haben immer Vorrang — der `env`-Block eines Clients
+kann also nie von einer veralteten `.env` überschrieben werden. `.env` ist
+gitignored.
+
 Bedrohungsmodell, Garantien und Schwachstellenmeldung: [SECURITY.md](SECURITY.md).
 
 ## Datenschutz

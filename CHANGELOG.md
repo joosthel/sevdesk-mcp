@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+- Optional `.env` support for runs outside an MCP client: a `.env` beside
+  `package.json` is read at startup, so `npm run dev` and
+  `node dist/index.js` no longer need the token pasted onto the command
+  line (and into shell history). Read from the package root, never the
+  working directory — an npx-launched server inherits the client's cwd,
+  and absorbing a stray `.env` from there would be a footgun. Real
+  environment variables always win, so a client's `env` block can never be
+  shadowed by a stale file. `.env.example` documents every variable.
+
 - Duplicate-write protection: a 5xx or network failure on a write is no
   longer retried — the request may already have reached sevDesk, so a
   replay could create a duplicate draft. A 429 stays retryable for every

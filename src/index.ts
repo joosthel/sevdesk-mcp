@@ -4,11 +4,15 @@ import { serveStdio } from "@modelcontextprotocol/server/stdio";
 import { catalog } from "./catalog.js";
 import { SevdeskClient } from "./client.js";
 import { loadConfig } from "./config.js";
+import { loadDotEnv } from "./lib/env.js";
 import { createProfileResolver } from "./lib/profile.js";
 import type { ToolContext } from "./lib/tool.js";
 import { VERSION, buildServer, tools } from "./server.js";
 
 async function main(): Promise<void> {
+  // A .env beside package.json is a convenience for runs outside an MCP
+  // client; the client's own env block still wins over anything in it.
+  const envFile = loadDotEnv();
   const config = loadConfig();
   const client = new SevdeskClient(config);
   const ctx: ToolContext = {
@@ -28,7 +32,8 @@ async function main(): Promise<void> {
   console.error(
     `sevdesk-mcp ${VERSION} ready · ${tools.length} tools · ` +
       `${catalog.operationCount} API operations · ` +
-      `mode: ${config.readOnly ? "READ-ONLY" : config.dryRun ? "DRY-RUN" : "read/write"}`,
+      `mode: ${config.readOnly ? "READ-ONLY" : config.dryRun ? "DRY-RUN" : "read/write"}` +
+      (envFile ? ` · loaded ${envFile}` : ""),
   );
 }
 

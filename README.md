@@ -146,6 +146,13 @@ essentials.
 | `SEVDESK_RATE_LIMIT` | `4` | Client-side pacing in requests/second (token bucket), so bursty audit fan-outs don't collide with sevDesk's throttle. `0` disables pacing |
 | `SEVDESK_DEBUG` | `false` | Log `METHOD /path -> status` to stderr — never query strings, bodies or the token |
 
+Set these in the `env` block of your MCP client — that is the supported path and the
+one the client controls. For runs outside a client (`npm run dev`, `node dist/index.js`
+from a clone), copy `.env.example` to `.env` in the package root and the server reads it
+at startup. The file is read from the package root, never the working directory, and
+real environment variables always win over it, so a client's `env` block can never be
+shadowed by a stale `.env`. `.env` is gitignored.
+
 The threat model, guarantees and vulnerability reporting are documented in [SECURITY.md](SECURITY.md).
 
 ## Privacy Policy

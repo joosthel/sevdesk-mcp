@@ -13,7 +13,19 @@ npm test          # vitest, no API token needed — everything runs against stub
 npm run typecheck
 ```
 
-To run the server against a real account: `SEVDESK_API_TOKEN=... SEVDESK_READ_ONLY=true npm run dev`.
+To run the server against a real account, copy `.env.example` to `.env` and put your
+token in it — `npm run dev` and `node dist/index.js` read it automatically, so the token
+stays out of your shell history:
+
+```bash
+cp .env.example .env   # then fill in SEVDESK_API_TOKEN; .env is gitignored
+npm run dev
+```
+
+The file is read from the package root (never the working directory), and real
+environment variables always win over it — so an MCP client's `env` block keeps
+overriding a stale `.env`. Inline variables still work if you prefer:
+`SEVDESK_API_TOKEN=... SEVDESK_READ_ONLY=true npm run dev`.
 
 ## Ground rules
 
