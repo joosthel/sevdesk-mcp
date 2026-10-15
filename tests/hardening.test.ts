@@ -137,9 +137,10 @@ describe("assertAllowedPath", () => {
 });
 
 describe("annotations and output cap", () => {
-  it("only sevdesk_call and the payment reset are destructive", () => {
+  it("only sevdesk_call, the draft delete and the payment reset are destructive", () => {
     expect(tools.filter((t) => t.destructive).map((t) => t.name).sort()).toEqual([
       "sevdesk_call",
+      "sevdesk_delete_voucher",
       "sevdesk_reset_voucher_to_open",
     ]);
   });

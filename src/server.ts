@@ -2,6 +2,7 @@ import { Server } from "@modelcontextprotocol/server";
 
 import type { ToolContext, ToolDef } from "./lib/tool.js";
 import { auditTools } from "./tools/audit.js";
+import { cleanupTools } from "./tools/cleanup.js";
 import { discoveryTools } from "./tools/discovery.js";
 import { resourceTools } from "./tools/resources.js";
 
@@ -24,7 +25,7 @@ export function capOutput(text: string): string {
 export const VERSION = "0.5.0";
 
 /** Every tool the server exposes, in listing order. */
-export const tools: ToolDef[] = [...resourceTools, ...auditTools, ...discoveryTools];
+export const tools: ToolDef[] = [...resourceTools, ...cleanupTools, ...auditTools, ...discoveryTools];
 
 /**
  * Assemble the MCP server: tool listing and dispatch. Transport-agnostic —

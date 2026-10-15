@@ -26,6 +26,21 @@
 - `sevdesk_create_voucher` takes `accountDatevId` per position, the booking
   account on sevdesk-Update 2.0.
 - Voucher status 750 is reported as `teilbezahlt`.
+- Ledger-cleanup tools, each with a status check before the write, a
+  refusal for enshrined objects, `dryRun`, and a read-back afterwards:
+  `sevdesk_delete_voucher` (drafts without payments only; the only tool
+  with `destructiveHint`), `sevdesk_set_transaction_private` (open
+  transactions only), `sevdesk_upload_voucher_file_content` (base64 upload
+  for hosted clients, type checked by magic bytes, 10 MB cap, returns only
+  the filename token), `sevdesk_update_draft_voucher` (date, number,
+  supplier, tax rule, positions; `finalize` to open) and
+  `sevdesk_book_voucher` (`bookAmount` against one open transaction, with
+  direction and amount checks). Observed live and encoded: `DELETE
+  /Voucher/{id}` works although the OpenAPI document omits it, and an
+  open voucher needs `accountDatev` on every position (422 "Valid
+  accountDatev must be given" otherwise).
+- `ToolDef.destructive` sets the MCP `destructiveHint` per tool instead of
+  `false` for all.
 
 **Changed**
 

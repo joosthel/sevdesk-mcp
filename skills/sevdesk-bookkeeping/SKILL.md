@@ -68,6 +68,18 @@ be open (100), not a draft.
    is refused. If refused, tell the user booking is off rather than
    looking for another way to book.
 
+## Ledger cleanup
+
+Run every step with `dryRun: true` first and show the preview.
+
+- Duplicate draft → `sevdesk_delete_voucher` (drafts only, cannot be undone).
+- Private payment on the business account → `sevdesk_set_transaction_private`.
+- Wrong amounts or VAT on a draft → `sevdesk_update_draft_voucher` with the
+  full new `positions` list; `finalize: true` once it is right.
+- Receipt arrives as an attachment, not a file → `sevdesk_upload_voucher_file_content`.
+- Voucher paid → `sevdesk_book_voucher` with the matching transaction from
+  `sevdesk_reconcile_transactions`; read its warnings before confirming.
+
 ## §13b reverse-charge check (foreign supplier, 0 % VAT)
 
 1. Is the supplier established abroad? The contact's country is
