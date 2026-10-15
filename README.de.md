@@ -97,6 +97,18 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 Highlights: `sevdesk_summarize` aggregiert Rechnungen oder Belege serverseitig — Anzahl und Netto-/Steuer-/Brutto-Summen, gruppiert nach Monat, Status oder Kontakt — Fragen wie „Umsatz in Q2“ oder „Ausgaben je Lieferant“ kosten damit ein paar hundert Tokens, egal wie groß das Buchungsjournal ist. `sevdesk_receipt_guidance` beantwortet „welche Kombinationen aus Buchungskonto, Steuerregel und Steuersatz akzeptiert sevDesk tatsächlich" aus sevDesks eigener Validierungstabelle. `sevdesk_set_tax_rule` bucht einen Beleg-Entwurf mit Leitplanken auf eine andere Steuerregel um. `sevdesk_create_invoice` erstellt immer **Entwürfe** — nichts erreicht einen Kunden ohne Review. `sevdesk_get_invoice_pdf` speichert das gerenderte PDF, ohne den Versandstatus der Rechnung anzufassen.
 
+### Aufräumen
+
+| Tool | Was es tut |
+|---|---|
+| `sevdesk_delete_voucher` | Löscht einen Beleg-Entwurf (Status 50) ohne Zahlungen, z. B. ein Duplikat; meldet, was gelöscht wurde |
+| `sevdesk_set_transaction_private` | Markiert eine offene Banktransaktion (Status 100) als privat (300) |
+| `sevdesk_upload_voucher_file_content` | Lädt einen Beleg hoch, der inline als Base64 kommt (PDF/PNG/JPG, am Inhalt geprüft, max. 10 MB) — für gehostete Clients ohne Dateisystem |
+| `sevdesk_update_draft_voucher` | Korrigiert einen Entwurf: Datum, Belegnummer, Lieferant, Steuerregel, Positionen (Betrag, Satz, Buchungskonto); `finalize` setzt ihn auf offen (100) |
+| `sevdesk_book_voucher` | Bucht einen offenen Beleg gegen eine offene Banktransaktion (`bookAmount`): prüft Richtung, offenen Betrag und Transaktionsbetrag, warnt, wenn der Banktext den Lieferanten nicht nennt |
+
+Alle fünf verweigern festgeschriebene Objekte, akzeptieren `dryRun` und lesen das Objekt danach zur Kontrolle erneut. Sie gibt es, damit Routine-Aufräumarbeiten nicht das ungeschützte `sevdesk_call` brauchen.
+
 ### Vollständige Abdeckung
 
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
@@ -165,6 +177,7 @@ Der Nur-Lesen-Modus greift dreifach: Schreib-Tools verschwinden aus der Tool-Lis
 - Jedes Schreib-Tool akzeptiert ein `dryRun` pro Aufruf und beachtet das globale `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` und `sevdesk_create_invoice` erstellen **Entwürfe** — nichts wird stillschweigend gebucht oder versendet.
 - `sevdesk_set_tax_rule` und `sevdesk_mark_invoice_sent` verweigern festgeschriebene Dokumente und verifizieren ihre Änderung durch erneutes Lesen.
+- Die Aufräum-Tools prüfen vor jedem Schreiben den Status (nur Entwürfe werden gelöscht oder korrigiert, nur offene Transaktionen privat gesetzt oder gebucht) und verweigern festgeschriebene Objekte. `sevdesk_delete_voucher` ist das einzige Tool, das sich nicht rückgängig machen lässt; es trägt den MCP-`destructiveHint`.
 - Es gibt bewusst **kein E-Mail-Versand-Tool**, und `sevdesk_get_invoice_pdf` überschreibt niemals eine bestehende Datei.
 - **Gebuchte und bezahlte Belege sind bewusst vom API-Umbuchen ausgenommen.** Die sevDesk-API ändert nur Entwürfe, und das Zurücksetzen eines bezahlten Fremdwährungsbelegs rechnet dessen EUR-Beträge zum heutigen Kurs neu — historische Werte ändern sich stillschweigend. Gebuchte Belege korrigierst du in der sevDesk-Oberfläche, wo die Originalbeträge neben dem Beleg sichtbar bleiben.
 

@@ -32,6 +32,8 @@ export interface ToolDef {
   };
   /** Declared so clients (and the read-only gate) know before calling. */
   mutating: boolean;
+  /** Irreversible writes (deletes) — sets the MCP destructiveHint. */
+  destructive?: boolean;
   /**
    * Keep the tool listed and callable in read-only mode even though it is
    * declared mutating — for tools that decide per call (sevdesk_call also

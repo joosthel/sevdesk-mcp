@@ -2,13 +2,14 @@ import { Server } from "@modelcontextprotocol/server";
 
 import type { ToolContext, ToolDef } from "./lib/tool.js";
 import { auditTools } from "./tools/audit.js";
+import { cleanupTools } from "./tools/cleanup.js";
 import { discoveryTools } from "./tools/discovery.js";
 import { resourceTools } from "./tools/resources.js";
 
 export const VERSION = "0.4.0";
 
 /** Every tool the server exposes, in listing order. */
-export const tools: ToolDef[] = [...resourceTools, ...auditTools, ...discoveryTools];
+export const tools: ToolDef[] = [...resourceTools, ...cleanupTools, ...auditTools, ...discoveryTools];
 
 /**
  * Assemble the MCP server: tool listing and dispatch. Transport-agnostic —
@@ -24,7 +25,7 @@ export function buildServer(ctx: ToolContext): Server {
       capabilities: { tools: {} },
       instructions:
         `sevDesk accounting (German SMB bookkeeping) for AI agents. ` +
-        `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes create drafts only"}. ` +
+        `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes default to drafts"}. ` +
         `Start with sevdesk_ping: it verifies the token and reports the account's ` +
         `bookkeeping generation and detected VAT regime (regular vs §19 Kleinunternehmer) ` +
         `with evidence — tax defaults and audit advice follow that regime. ` +
@@ -52,11 +53,11 @@ export function buildServer(ctx: ToolContext): Server {
             ? " ⚠️ This tool can change data in sevDesk."
             : ""),
         inputSchema: t.inputSchema,
-        // Standard MCP hints so clients can shape confirmation UX. Writes are
-        // never destructive here: they create drafts or flip reversible flags.
+        // Standard MCP hints so clients can shape confirmation UX. Writes create
+        // drafts or flip reversible flags, except the few marked destructive.
         annotations: {
           readOnlyHint: !t.mutating,
-          destructiveHint: false,
+          destructiveHint: t.destructive === true,
           openWorldHint: true,
         },
       })),
