@@ -97,6 +97,18 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 
 Highlights: `sevdesk_summarize` aggregates invoices or vouchers server-side — counts and net/tax/gross sums grouped by month, status or contact — so questions like "revenue in Q2" or "expenses by supplier" cost a few hundred tokens however large the ledger is. `sevdesk_receipt_guidance` answers "which booking account / tax rule / rate combinations does sevDesk actually accept" from sevDesk's own validation table. `sevdesk_set_tax_rule` rebooks a draft voucher onto a different VAT rule with guardrails. `sevdesk_create_invoice` always creates **drafts** — nothing reaches a customer without review. `sevdesk_get_invoice_pdf` saves the rendered PDF without touching the invoice's send state.
 
+### Ledger cleanup
+
+| Tool | What it does |
+|---|---|
+| `sevdesk_delete_voucher` | Deletes a draft voucher (status 50) without payments, e.g. a duplicate; returns what was deleted |
+| `sevdesk_set_transaction_private` | Marks an open bank transaction (status 100) as private (300) |
+| `sevdesk_upload_voucher_file_content` | Uploads a receipt sent inline as base64 (PDF/PNG/JPG, checked by content, max 10 MB) — for hosted clients without filesystem access |
+| `sevdesk_update_draft_voucher` | Corrects a draft: date, document number, supplier, tax rule, positions (amount, rate, booking account); `finalize` sets it to open (100) |
+| `sevdesk_book_voucher` | Books an open voucher against one open bank transaction (`bookAmount`): checks direction, open amount and transaction amount, warns when the bank text does not name the supplier |
+
+All five refuse enshrined objects, accept `dryRun`, and read the object back to verify the change. They exist so that routine cleanup does not need the unguarded `sevdesk_call`.
+
 ### Full coverage
 
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
@@ -166,6 +178,7 @@ Read-only mode is enforced three times: write tools are hidden from the tool lis
 - Every write tool accepts a per-call `dryRun` and honors the global `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` and `sevdesk_create_invoice` default to **drafts** — nothing is booked or sent silently.
 - `sevdesk_set_tax_rule` and `sevdesk_mark_invoice_sent` refuse enshrined documents and verify their changes by reading the document back.
+- The ledger-cleanup tools check the object's status before every write (only drafts are deleted or corrected, only open transactions are marked private or booked) and refuse enshrined ones. `sevdesk_delete_voucher` is the only tool that cannot be undone; it carries the MCP `destructiveHint`.
 - There is deliberately **no email-send tool**, and `sevdesk_get_invoice_pdf` never overwrites an existing file.
 - **Booked and paid vouchers are deliberately out of scope for API rebooking.** The sevDesk API only updates drafts, and resetting a paid foreign-currency voucher recalculates its EUR amounts at today's exchange rate — silently changing historical values. Correct booked vouchers in the sevDesk UI, where the original amounts stay visible against the receipt.
 
