@@ -589,3 +589,212 @@ describe("sevdesk_upload_voucher_file", () => {
     expect(out.response.objects).not.toHaveProperty("content");
   });
 });
+
+
+describe("sevdesk_link_transaction", () => {
+  const link = resourceTools.find((t) => t.name === "sevdesk_link_transaction")!;
+
+  function linkCtx(voucher: Row, tx: Row) {
+    const sent: Array<{ method: string; path: string; body?: unknown }> = [];
+    const client = {
+      async request(req: { method: string; path: string; body?: unknown }) {
+        if (req.method === "PUT") {
+          sent.push(req);
+          voucher.paidAmount = Math.abs(num((req.body as Row).amount));
+          voucher.status = "1000";
+          tx.status = "400";
+          return { status: 200, data: { objects: voucher } };
+        }
+        if (req.path.startsWith("/Voucher/")) return { status: 200, data: { objects: [voucher] } };
+        if (req.path.startsWith("/CheckAccountTransaction/")) {
+          return { status: 200, data: { objects: [tx] } };
+        }
+        return { status: 404, data: {} };
+      },
+    };
+    const ctx = {
+      client,
+      config: { baseUrl: "https://example.test/api/v1", readOnly: false, dryRun: false, allowedReceiptDirs: [] },
+      getProfile: async () => stubProfile(),
+    } as unknown as ToolContext;
+    return { ctx, sent };
+  }
+
+  function num(v: unknown): number {
+    return typeof v === "number" ? v : Number.parseFloat(String(v));
+  }
+
+  const openVoucher = (): Row => ({
+    id: "156016310",
+    status: "100",
+    creditDebit: "C",
+    sumGross: "16.99",
+    paidAmount: 0,
+    enshrined: null,
+  });
+  const openTx = (): Row => ({
+    id: "1869078520",
+    status: "100",
+    amount: "-16.99",
+    valueDate: "2026-06-24T00:00:00+02:00",
+    checkAccount: { id: "6232758", objectName: "CheckAccount" },
+  });
+
+  it("books the voucher against the existing transaction", async () => {
+    const { ctx, sent } = linkCtx(openVoucher(), openTx());
+    const result = (await link.handler(
+      { voucherId: "156016310", transactionId: "1869078520" },
+      ctx,
+    )) as { linked: boolean; voucher: { status: string }; transaction: { status: string } };
+    expect(sent).toHaveLength(1);
+    expect(sent[0].path).toBe("/Voucher/156016310/bookAmount");
+    const body = sent[0].body as Row;
+    expect(body.amount).toBe(-16.99);
+    expect(body.date).toBe("2026-06-24");
+    expect(body.createFeed).toBe(false);
+    expect(body.type).toBe("FULL_PAYMENT");
+    expect(body.checkAccount).toEqual({ id: 6232758, objectName: "CheckAccount" });
+    expect(body.checkAccountTransaction).toEqual({
+      id: 1869078520,
+      objectName: "CheckAccountTransaction",
+    });
+    expect(result.linked).toBe(true);
+    expect(result.voucher.status).toBe("bezahlt");
+    expect(result.transaction.status).toBe("gebucht");
+  });
+
+  it("books part of a split payment", async () => {
+    const tx = { ...openTx(), amount: "-27.99" };
+    const voucher = { ...openVoucher(), sumGross: "17.82" };
+    const { ctx, sent } = linkCtx(voucher, tx);
+    await link.handler({ voucherId: "1", transactionId: "2" }, ctx);
+    expect((sent[0].body as Row).amount).toBe(-17.82);
+    expect((sent[0].body as Row).type).toBe("FULL_PAYMENT");
+  });
+
+  it("books a partial amount as type N", async () => {
+    const { ctx, sent } = linkCtx({ ...openVoucher(), sumGross: "30" }, { ...openTx(), amount: "-10" });
+    await link.handler({ voucherId: "1", transactionId: "2", amount: 10 }, ctx);
+    expect((sent[0].body as Row).type).toBe("N");
+  });
+
+  it("refuses an already paid voucher", async () => {
+    const { ctx, sent } = linkCtx({ ...openVoucher(), status: "1000" }, openTx());
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/already paid/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an already booked transaction", async () => {
+    const { ctx, sent } = linkCtx(openVoucher(), { ...openTx(), status: "400" });
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/gebucht/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses a sign mismatch", async () => {
+    const { ctx, sent } = linkCtx(openVoucher(), { ...openTx(), amount: "16.99" });
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/Sign mismatch/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an amount above the transaction", async () => {
+    const { ctx, sent } = linkCtx({ ...openVoucher(), sumGross: "20" }, openTx());
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(
+      /exceeds the transaction/,
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses drafts", async () => {
+    const { ctx, sent } = linkCtx({ ...openVoucher(), status: "50" }, openTx());
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/draft/);
+    expect(sent).toEqual([]);
+  });
+
+  it("previews without sending under dryRun", async () => {
+    const { ctx, sent } = linkCtx(openVoucher(), openTx());
+    const result = (await link.handler(
+      { voucherId: "1", transactionId: "2", dryRun: true },
+      ctx,
+    )) as { dryRun: boolean };
+    expect(result.dryRun).toBe(true);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("sevdesk_reset_voucher_to_open", () => {
+  const reset = resourceTools.find((t) => t.name === "sevdesk_reset_voucher_to_open")!;
+
+  function resetCtx(voucher: Row) {
+    const sent: Array<{ method: string; path: string }> = [];
+    const client = {
+      async request(req: { method: string; path: string }) {
+        if (req.method === "PUT") {
+          sent.push(req);
+          voucher.status = "100";
+          voucher.paidAmount = 0;
+          return { status: 200, data: { objects: voucher } };
+        }
+        return { status: 200, data: { objects: [voucher] } };
+      },
+    };
+    const ctx = {
+      client,
+      config: { baseUrl: "https://example.test/api/v1", readOnly: false, dryRun: false, allowedReceiptDirs: [] },
+      getProfile: async () => stubProfile(),
+    } as unknown as ToolContext;
+    return { ctx, sent };
+  }
+
+  it("resets a partially paid voucher", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "750", paidAmount: -21.42, enshrined: null });
+    const result = (await reset.handler({ voucherId: "1" }, ctx)) as { status: string; changed: boolean };
+    expect(sent[0].path).toBe("/Voucher/1/resetToOpen");
+    expect(result).toMatchObject({ changed: true, status: "offen" });
+  });
+
+  it("leaves an open voucher alone", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "100", enshrined: null });
+    const result = (await reset.handler({ voucherId: "1" }, ctx)) as { changed: boolean };
+    expect(result.changed).toBe(false);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses enshrined vouchers", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "1000", enshrined: "2026-01-01" });
+    await expect(reset.handler({ voucherId: "1" }, ctx)).rejects.toThrow(/enshrined/);
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("sevdesk_create_voucher booking account", () => {
+  const createVoucher = resourceTools.find((t) => t.name === "sevdesk_create_voucher")!;
+
+  it("sends accountDatevId as the position's accountDatev", async () => {
+    const out = (await createVoucher.handler(
+      {
+        supplierName: "Acme Ltd",
+        voucherDate: "01.09.2026",
+        taxRuleId: "10",
+        positions: [{ sumGross: 12.5, taxRate: 0, accountDatevId: "4266" }],
+        dryRun: true,
+      },
+      ctxWith(() => ({ status: 200, data: {} })),
+    )) as { wouldSend: { body: { voucherPosSave: Row[] } } };
+    expect(out.wouldSend.body.voucherPosSave[0].accountDatev).toEqual({ id: "4266", objectName: "AccountDatev" });
+  });
+
+  it("refuses a non-numeric accountDatevId", async () => {
+    await expect(
+      createVoucher.handler(
+        {
+          supplierName: "Acme Ltd",
+          voucherDate: "01.09.2026",
+          taxRuleId: "10",
+          positions: [{ sumGross: 12.5, taxRate: 0, accountDatevId: "../x" }],
+          dryRun: true,
+        },
+        ctxWith(() => ({ status: 200, data: {} })),
+      ),
+    ).rejects.toThrow(/accountDatevId/);
+  });
+});

@@ -25,6 +25,7 @@ import {
   obj,
   optId,
   optLimit,
+  optNumber,
   optRuleId,
   optString,
   positionObjects,
@@ -612,7 +613,12 @@ const createVoucher: ToolDef = {
             sumGross: { type: "number", description: "Gross amount of the position." },
             taxRate: { type: "number", description: "VAT rate in percent, e.g. 19 or 0." },
             comment: { type: "string", description: "Free-text description." },
-            accountingTypeId: { type: "string", description: "sevDesk accounting type id." },
+            accountingTypeId: { type: "string", description: "sevDesk accounting type id (legacy bookkeeping only)." },
+            accountDatevId: {
+              type: "string",
+              description:
+                "Booking account id for sevdesk-Update 2.0 (accountDatevId from sevdesk_receipt_guidance). Replaces accountingTypeId.",
+            },
           },
         },
       },
@@ -716,10 +722,12 @@ const createVoucher: ToolDef = {
       }
       const hasNet = given(p.sumNet);
       const accountingTypeId = optId(p, "accountingTypeId");
+      const accountDatevId = optId(p, "accountDatevId");
       return {
         objectName: "VoucherPos",
         mapAll: true,
         accountingType: accountingTypeId ? { id: accountingTypeId, objectName: "AccountingType" } : undefined,
+        accountDatev: accountDatevId ? { id: accountDatevId, objectName: "AccountDatev" } : undefined,
         taxRate: p.taxRate,
         net: hasNet,
         sumNet: hasNet ? sum : undefined,
@@ -750,7 +758,34 @@ const createVoucher: ToolDef = {
       body: payload,
       mutating: true,
     });
-    return { created: true, statusUsed: status, response: data };
+    // sevDesk echoes the full voucher with the whole sevClient (bank data, tax
+    // number, settings) embedded twice — thousands of tokens. Hand back what a
+    // caller needs to continue.
+    const objects = (data as Row | undefined)?.objects as Row | undefined;
+    const saved = objects?.voucher as Row | undefined;
+    if (!saved) return { created: true, statusUsed: status, response: data };
+    const posOut = Array.isArray(objects?.voucherPos) ? (objects.voucherPos as Row[]) : [];
+    return {
+      created: true,
+      statusUsed: status,
+      voucher: {
+        id: String(saved.id ?? ""),
+        status: VOUCHER_STATUS[String(saved.status)] ?? String(saved.status ?? ""),
+        voucherDate: saved.voucherDate ?? null,
+        supplierName: saved.supplierName ?? null,
+        description: saved.description ?? null,
+        sumGross: round2(num(saved.sumGross)),
+        taxRule: (saved.taxRule as Row | undefined)?.id ?? null,
+        documentId: (saved.document as Row | undefined)?.id ?? null,
+      },
+      positions: posOut.map((p) => ({
+        id: String(p.id ?? ""),
+        accountDatevId: (p.accountDatev as Row | undefined)?.id ?? null,
+        accountingTypeId: (p.accountingType as Row | undefined)?.id ?? null,
+        sumGross: round2(num(p.sumGross)),
+        comment: p.comment ?? null,
+      })),
+    };
   },
 };
 
@@ -1175,6 +1210,179 @@ const markInvoiceSent: ToolDef = {
   },
 };
 
+/** sevDesk's CheckAccountTransaction status codes. */
+const TRANSACTION_STATUS: Record<string, string> = {
+  "100": "offen",
+  "200": "verknüpft",
+  "300": "privat",
+  "350": "automatisch verbucht",
+  "400": "gebucht",
+};
+
+const linkTransaction: ToolDef = {
+  name: "sevdesk_link_transaction",
+  title: "Link a voucher to an existing bank transaction",
+  description:
+    "Book a voucher against an EXISTING bank transaction (PUT /Voucher/{id}/bookAmount with " +
+    "checkAccountTransaction) — the same as assigning the receipt to the transaction in the " +
+    "sevDesk UI. Amount defaults to the voucher's open amount, date and bank account are taken " +
+    "from the transaction. Refuses enshrined vouchers, booked/private transactions, a sign " +
+    "mismatch (expense voucher vs. incoming money) and amounts above the transaction. One " +
+    "transaction can be linked to several vouchers (split payments). WRITE operation.",
+  mutating: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      voucherId: str("Numeric voucher id."),
+      transactionId: str("Numeric CheckAccountTransaction id (sevdesk_list_transactions)."),
+      amount: {
+        type: "number",
+        description: "Amount to book (positive). Defaults to the voucher's open amount.",
+      },
+      dryRun: bool("Preview the request without sending it."),
+    },
+    required: ["voucherId", "transactionId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const voucherId = requireId(args, "voucherId");
+    const transactionId = requireId(args, "transactionId");
+
+    const voucher = await fetchUnenshrined(ctx, "Voucher", voucherId);
+    const { data: tData } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/CheckAccountTransaction/${encodeURIComponent(transactionId)}`,
+    });
+    const tx = tData?.objects?.[0];
+    if (!tx) throw new Error(`No bank transaction with id ${transactionId}.`);
+
+    const txStatus = String(tx.status ?? "");
+    if (txStatus !== "100" && txStatus !== "200") {
+      throw new Error(
+        `Transaction ${transactionId} is ${TRANSACTION_STATUS[txStatus] ?? txStatus} — ` +
+          "only open or partially linked transactions can take a voucher.",
+      );
+    }
+    const voucherStatus = String(voucher.status ?? "");
+    if (voucherStatus === "50") {
+      throw new Error(`Voucher ${voucherId} is still a draft (Entwurf) — set it to open (100) first.`);
+    }
+    if (voucherStatus === "1000") throw new Error(`Voucher ${voucherId} is already paid.`);
+
+    const txAmount = round2(num(tx.amount));
+    const expense = voucher.creditDebit !== "D";
+    if (expense ? txAmount > 0 : txAmount < 0) {
+      throw new Error(
+        `Sign mismatch: ${expense ? "expense" : "revenue"} voucher ${voucherId} vs. transaction ` +
+          `amount ${txAmount}.`,
+      );
+    }
+
+    const open = round2(num(voucher.sumGross) - num(voucher.paidAmount));
+    if (open <= 0) throw new Error(`Voucher ${voucherId} has nothing left to pay (open ${open}).`);
+    const amount = round2(optNumber(args, "amount") ?? open);
+    if (amount <= 0) throw new Error("Amount must be positive.");
+    if (amount > open) throw new Error(`Amount ${amount} exceeds the voucher's open amount ${open}.`);
+    if (amount > Math.abs(txAmount)) {
+      throw new Error(`Amount ${amount} exceeds the transaction amount ${Math.abs(txAmount)}.`);
+    }
+
+    const txDate = parseSevdeskDate(tx.valueDate ?? tx.entryDate);
+    if (!txDate) throw new Error(`Transaction ${transactionId} has no date.`);
+    const accountId = String((tx.checkAccount as Row | undefined)?.id ?? "");
+    if (!accountId) throw new Error(`Transaction ${transactionId} has no bank account.`);
+
+    // "N" is sevDesk's PARTIAL booking (status 750 teilbezahlt) — a payment
+    // that settles the voucher must be FULL_PAYMENT. The amount carries the
+    // bank transaction's sign: a positive amount on an expense voucher is
+    // booked as money coming back (paidAmount goes negative, 750).
+    const body = {
+      amount: expense ? -amount : amount,
+      date: ymd(txDate),
+      type: amount === open ? "FULL_PAYMENT" : "N",
+      checkAccount: { id: Number(accountId), objectName: "CheckAccount" },
+      checkAccountTransaction: { id: Number(transactionId), objectName: "CheckAccountTransaction" },
+      createFeed: false,
+    };
+    const path = `/Voucher/${encodeURIComponent(voucherId)}/bookAmount`;
+    if (isDryRun(args, ctx)) {
+      return { dryRun: true, wouldSend: { method: "PUT", path, body } };
+    }
+
+    await ctx.client.request({ method: "PUT", path, body, mutating: true });
+
+    // Read both sides back instead of trusting the PUT response.
+    const [{ data: vCheck }, { data: tCheck }] = await Promise.all([
+      ctx.client.request<{ objects?: Row[] }>({
+        method: "GET",
+        path: `/Voucher/${encodeURIComponent(voucherId)}`,
+      }),
+      ctx.client.request<{ objects?: Row[] }>({
+        method: "GET",
+        path: `/CheckAccountTransaction/${encodeURIComponent(transactionId)}`,
+      }),
+    ]);
+    const v = vCheck?.objects?.[0] ?? {};
+    const t = tCheck?.objects?.[0] ?? {};
+    return {
+      linked: true,
+      voucherId,
+      transactionId,
+      amount,
+      date: body.date,
+      voucher: {
+        status: VOUCHER_STATUS[String(v.status)] ?? String(v.status ?? ""),
+        paidAmount: round2(num(v.paidAmount)),
+      },
+      transaction: {
+        status: TRANSACTION_STATUS[String(t.status)] ?? String(t.status ?? ""),
+      },
+    };
+  },
+};
+
+const resetVoucherToOpen: ToolDef = {
+  name: "sevdesk_reset_voucher_to_open",
+  title: "Undo a voucher's payments",
+  description:
+    "Reset a paid or partially paid voucher to open (PUT /Voucher/{id}/resetToOpen): sevDesk " +
+    "unlinks every payment/bank transaction booked on it, the transactions become open again. " +
+    "The undo for sevdesk_link_transaction. Refuses enshrined vouchers and drafts. WRITE operation.",
+  mutating: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      voucherId: str("Numeric voucher id."),
+      dryRun: bool("Preview the request without sending it."),
+    },
+    required: ["voucherId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const voucherId = requireId(args, "voucherId");
+    const voucher = await fetchUnenshrined(ctx, "Voucher", voucherId);
+    const status = String(voucher.status ?? "");
+    if (status === "50") throw new Error(`Voucher ${voucherId} is a draft — nothing to reset.`);
+    if (status === "100") return { voucherId, status: "offen", changed: false };
+
+    const path = `/Voucher/${encodeURIComponent(voucherId)}/resetToOpen`;
+    if (isDryRun(args, ctx)) return { dryRun: true, wouldSend: { method: "PUT", path } };
+
+    await ctx.client.request({ method: "PUT", path, mutating: true });
+    const { data } = await ctx.client.request<{ objects?: Row[] }>({
+      method: "GET",
+      path: `/Voucher/${encodeURIComponent(voucherId)}`,
+    });
+    const v = data?.objects?.[0] ?? {};
+    return {
+      voucherId,
+      changed: true,
+      status: VOUCHER_STATUS[String(v.status)] ?? String(v.status ?? ""),
+      paidAmount: round2(num(v.paidAmount)),
+    };
+  },
+};
+
 export const resourceTools: ToolDef[] = [
   ping,
   listVouchers,
@@ -1185,6 +1393,8 @@ export const resourceTools: ToolDef[] = [
   listTransactions,
   uploadVoucherFile,
   createVoucher,
+  linkTransaction,
+  resetVoucherToOpen,
   receiptGuidance,
   setTaxRule,
   createInvoice,
