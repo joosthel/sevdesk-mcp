@@ -30,7 +30,7 @@ overriding a stale `.env`. Inline variables still work if you prefer:
 ## Ground rules
 
 - **Tests first.** Every behavior change comes with a test that fails before the change. The suites stub the HTTP client — no network, no token.
-- **Safety is not negotiable.** Write tools stay behind the read-only gate, accept `dryRun`, default to drafts, and verify their changes by reading back. New tools that touch the filesystem go through the `SEVDESK_RECEIPT_DIRS` allowlist.
+- **Safety is not negotiable.** Write tools stay behind the read-only gate, accept `dryRun`, default to drafts, and verify their changes by reading back. Tools that book or remove payments set `booking: true`, which keeps them behind `SEVDESK_ALLOW_BOOKING`. New tools that touch the filesystem go through the `SEVDESK_RECEIPT_DIRS` allowlist.
 - **Domain facts need a source.** Tax-rule changes cite the sevDesk OpenAPI document (`openapi/sevdesk-openapi.yaml`) or observed live behavior — never assumption.
 - **Keep it lean.** No new runtime dependencies without a strong reason; match the existing style.
 

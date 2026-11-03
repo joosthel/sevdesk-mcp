@@ -17,7 +17,8 @@
       "args": ["${__dirname}/dist/index.js"],
       "env": {
         "SEVDESK_API_TOKEN": "${user_config.api_token}",
-        "SEVDESK_READ_ONLY": "${user_config.read_only}"
+        "SEVDESK_READ_ONLY": "${user_config.read_only}",
+        "SEVDESK_ALLOW_BOOKING": "${user_config.allow_booking}"
       }
     }
   },
@@ -34,6 +35,12 @@
       "title": "Read-only mode",
       "description": "Keep on until you deliberately want Claude to write to your books.",
       "default": true
+    },
+    "allow_booking": {
+      "type": "boolean",
+      "title": "Allow booking payments",
+      "description": "Lets Claude link vouchers to bank transactions and remove payments again. Has no effect in read-only mode.",
+      "default": false
     }
   },
   "privacy_policies": ["https://github.com/joosthel/sevdesk-mcp/blob/main/PRIVACY.md"],

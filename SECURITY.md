@@ -30,6 +30,11 @@ guard lives in this server, not in the model's goodwill.
   enshrined vouchers and wrong-side rules and verifies its own result, and
   `SEVDESK_DRY_RUN=true` (or a per-call `dryRun`) previews any payload without
   sending it.
+- **Curated booking is a separate opt-in.** The tools that book or remove
+  payments (`sevdesk_link_transaction`, `sevdesk_reset_voucher_to_open`) are
+  hidden and refused by the dispatcher unless `SEVDESK_ALLOW_BOOKING=true`.
+  The flag does not restrict `sevdesk_call`, which can reach every endpoint
+  whenever writes are enabled.
 - **No filesystem access unless you grant it.** The receipt file tools are
   disabled until `SEVDESK_RECEIPT_DIRS` names an explicit allowlist of absolute
   directories; paths outside it are refused. Containment is checked on real
