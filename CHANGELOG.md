@@ -2,6 +2,15 @@
 
 ## Unreleased
 
+**Breaking**
+
+- `sevdesk_call` refuses the booking operations (`bookVoucher`,
+  `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
+  `invoiceResetToOpen`, `creditNoteResetToOpen`) unless
+  `SEVDESK_ALLOW_BOOKING=true`, dry runs included. If you book invoice
+  payments through `sevdesk_call`, set the flag.
+  `sevdesk_describe_operation` marks these operations.
+
 **Added**
 
 - `sevdesk_link_transaction` books vouchers against an existing open bank
@@ -13,7 +22,7 @@
 - `sevdesk_reset_voucher_to_open` removes all payments from a voucher. It is
   marked destructive. Both tools refuse foreign-currency vouchers.
 - `SEVDESK_ALLOW_BOOKING` (default `false`): the two booking tools are hidden
-  and refused without it. It does not restrict `sevdesk_call`.
+  and refused without it.
 - `sevdesk_create_voucher` takes `accountDatevId` per position, the booking
   account on sevdesk-Update 2.0.
 - Voucher status 750 is reported as `teilbezahlt`.

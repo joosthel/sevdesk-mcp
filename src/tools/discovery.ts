@@ -1,4 +1,5 @@
 import {
+  BOOKING_OPERATIONS,
   briefOperation,
   catalog,
   describeOperation,
@@ -100,6 +101,8 @@ const callOperation: ToolDef = {
     "SEVDESK_DRY_RUN=true or `dryRun` is passed. Operations with a `preventSendBy` query " +
     "parameter (the *GetPdf reads) default it to true so a read does not mark the document as sent. " +
     "GETs that change state (sendByWithRender, enshrine flags, preventSendBy=false) count as writes. " +
+    "Booking operations (bookVoucher, bookInvoice, bookCreditNote and their resetToOpen) are " +
+    "refused unless SEVDESK_ALLOW_BOOKING=true; prefer sevdesk_link_transaction for vouchers. " +
     "Can call DELETE operations, which are irreversible.",
   mutating: true,
   destructive: true, // conservatively declared; the handler checks per operation
@@ -136,6 +139,12 @@ const callOperation: ToolDef = {
     const body = emptyBody ? undefined : args.body;
 
     if (op.mutating && ctx.config.readOnly) throw new ReadOnlyError(op.operationId);
+    if (BOOKING_OPERATIONS.has(op.operationId) && ctx.config.allowBooking !== true) {
+      throw new Error(
+        `Refused: ${op.operationId} books or removes payments in sevDesk. Booking is off unless the ` +
+          "server runs with SEVDESK_ALLOW_BOOKING=true.",
+      );
+    }
 
     const pathParamNames = new Set(
       op.params.filter((p) => p.in === "path").map((p) => p.name),

@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import { SevdeskClient } from "../src/client.js";
 import { loadConfig } from "../src/config.js";
 import type { ToolContext, ToolDef } from "../src/lib/tool.js";
+import { BOOKING_OPERATIONS, describeOperation, findOperation } from "../src/catalog.js";
 import { MAX_OUTPUT_CHARS, buildServer, capOutput, tools } from "../src/server.js";
 
 type Row = Record<string, unknown>;
@@ -145,6 +146,54 @@ describe("buildServer handlers", () => {
     } finally {
       tools.pop();
     }
+  });
+
+  it("sevdesk_call refuses booking operations without SEVDESK_ALLOW_BOOKING, even on dryRun", async () => {
+    const fetchCalls: string[] = [];
+    const s = await connect({ fetchCalls });
+    const cases: Array<[string, Row]> = [
+      ["bookVoucher", { voucherId: 1 }],
+      ["bookInvoice", { invoiceId: 1 }],
+      ["bookCreditNote", { creditNoteId: 1 }],
+      ["voucherResetToOpen", { voucherId: 1 }],
+      ["invoiceResetToOpen", { invoiceId: 1 }],
+      ["creditNoteResetToOpen", { creditNoteId: 1 }],
+    ];
+    for (const [operationId, params] of cases) {
+      for (const dryRun of [false, true]) {
+        const r = await s.call("sevdesk_call", { operationId, params, body: {}, dryRun });
+        expect(r.isError, operationId).toBe(true);
+        expect(r.content[0]!.text, operationId).toMatch(/SEVDESK_ALLOW_BOOKING/);
+      }
+    }
+    // Other writes are unaffected.
+    const other = await s.call("sevdesk_call", { operationId: "voucherResetToDraft", params: { voucherId: 1 }, dryRun: true });
+    expect(other.isError).toBeFalsy();
+    expect(fetchCalls).toHaveLength(0);
+    await s.close();
+  });
+
+  it("sevdesk_call runs booking operations with SEVDESK_ALLOW_BOOKING", async () => {
+    const s = await connect({ allowBooking: true });
+    const r = await s.call("sevdesk_call", {
+      operationId: "bookInvoice",
+      params: { invoiceId: 7 },
+      body: { amount: 10, date: "2026-11-03", type: "FULL_PAYMENT", checkAccount: { id: 1, objectName: "CheckAccount" } },
+      dryRun: true,
+    });
+    expect(r.isError).toBeFalsy();
+    expect(r.content[0]!.text).toMatch(/Invoice\/7\/bookAmount/);
+    await s.close();
+  });
+
+  it("names only real, mutating operations as booking operations, and describes them", async () => {
+    for (const id of BOOKING_OPERATIONS) {
+      const op = findOperation(id);
+      expect(op, id).toBeDefined();
+      expect(op!.mutating, id).toBe(true);
+      expect(describeOperation(op!)).toMatch(/SEVDESK_ALLOW_BOOKING/);
+    }
+    expect(describeOperation(findOperation("voucherResetToDraft")!)).not.toMatch(/SEVDESK_ALLOW_BOOKING/);
   });
 
   it("sevdesk_call refuses state-changing GETs in read-only mode with no HTTP", async () => {

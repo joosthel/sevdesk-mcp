@@ -39,7 +39,7 @@
     "allow_booking": {
       "type": "boolean",
       "title": "Allow booking payments",
-      "description": "Lets Claude link vouchers to bank transactions and remove payments again. Has no effect in read-only mode.",
+      "description": "Lets Claude book payments on vouchers, invoices and credit notes and remove them again. Has no effect in read-only mode.",
       "default": false
     }
   },

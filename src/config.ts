@@ -22,8 +22,9 @@ export interface Config {
   allowedReceiptDirs: string[];
   /**
    * When true, the booking tools (book a voucher against a bank transaction,
-   * remove a voucher's payments) are listed and callable. Off by default.
-   * Covers the curated tools only; sevdesk_call is not gated by it.
+   * remove a voucher's payments) are listed and callable, and sevdesk_call
+   * may run the booking operations (BOOKING_OPERATIONS in catalog.ts). Off
+   * by default.
    */
   allowBooking: boolean;
 }

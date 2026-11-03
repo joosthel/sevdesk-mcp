@@ -43,7 +43,7 @@ export function buildServer(ctx: ToolContext): Server {
       instructions:
         `sevDesk accounting (German SMB bookkeeping) for AI agents. ` +
         `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes default to drafts"}` +
-        `${bookingOn ? "; booking tools enabled (SEVDESK_ALLOW_BOOKING) — they book and remove payments, confirm each booking with the user" : ""}. ` +
+        `${bookingOn ? "; booking enabled (SEVDESK_ALLOW_BOOKING) — it books and removes payments, confirm each booking with the user" : writesOn ? "; booking payments is off (SEVDESK_ALLOW_BOOKING not set), including through sevdesk_call" : ""}. ` +
         `Start with sevdesk_ping: it verifies the token and reports the account's ` +
         `bookkeeping generation. Tax rules are never guessed: write tools that need one ` +
         `take taxRuleId explicitly, and sevdesk_receipt_guidance lists what each booking ` +

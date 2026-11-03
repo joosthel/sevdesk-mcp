@@ -62,6 +62,19 @@ export function briefOperation(op: Operation): string {
   return `[${flag}] ${op.operationId} — ${op.method} ${op.path}${op.summary ? ` · ${op.summary}` : ""}`;
 }
 
+/**
+ * Operations that book or remove payments. sevdesk_call refuses them unless
+ * SEVDESK_ALLOW_BOOKING=true, the same opt-in as the curated booking tools.
+ */
+export const BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
+  "bookVoucher",
+  "bookInvoice",
+  "bookCreditNote",
+  "voucherResetToOpen",
+  "invoiceResetToOpen",
+  "creditNoteResetToOpen",
+]);
+
 export function describeOperation(op: Operation): string {
   const lines: string[] = [
     `${op.operationId}`,
@@ -69,6 +82,9 @@ export function describeOperation(op: Operation): string {
     `tags: ${op.tags.join(", ") || "—"}`,
     `mutating: ${op.mutating ? "yes — changes data in sevDesk" : "no"}`,
   ];
+  if (BOOKING_OPERATIONS.has(op.operationId)) {
+    lines.push("booking: yes — books or removes payments; needs SEVDESK_ALLOW_BOOKING=true");
+  }
   if (op.summary) lines.push(`summary: ${op.summary}`);
   if (op.description) lines.push(`description: ${op.description}`);
 

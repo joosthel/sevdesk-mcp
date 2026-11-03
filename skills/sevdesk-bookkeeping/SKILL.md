@@ -48,7 +48,7 @@ Run in this order; each step's output feeds the next conversation turn:
    dryRun once confirmed.
 3. Foreign supplier without VAT? Do the §13b check below before booking.
 
-## Linking receipts to bank payments
+## Booking payments
 
 Needs `SEVDESK_ALLOW_BOOKING=true` (check `sevdesk_ping`). The voucher must
 be open (100), not a draft.
@@ -62,6 +62,11 @@ be open (100), not a draft.
    is refused; finish it in the sevDesk UI.
 4. Wrong link? `sevdesk_reset_voucher_to_open` removes ALL payments from
    the voucher, not just this one. Check the voucher first.
+5. Invoice or credit-note payment: there is no dedicated tool. Use
+   `sevdesk_call` with `bookInvoice` / `bookCreditNote` (describe it first,
+   `dryRun: true`, confirm with the user). Same flag; without it the call
+   is refused. If refused, tell the user booking is off rather than
+   looking for another way to book.
 
 ## §13b reverse-charge check (foreign supplier, 0 % VAT)
 

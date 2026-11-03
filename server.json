@@ -30,7 +30,7 @@
         },
         {
           "name": "SEVDESK_ALLOW_BOOKING",
-          "description": "List the booking tools that link vouchers to bank transactions (default false)",
+          "description": "Allow booking and removing payments on vouchers, invoices and credit notes (default false)",
           "isRequired": false,
           "format": "boolean"
         },
