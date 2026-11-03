@@ -594,21 +594,29 @@ describe("sevdesk_upload_voucher_file", () => {
 describe("sevdesk_link_transaction", () => {
   const link = resourceTools.find((t) => t.name === "sevdesk_link_transaction")!;
 
-  function linkCtx(voucher: Row, tx: Row) {
+  /** Stateful stub: bookAmount changes the voucher and the transaction like sevDesk does. */
+  function linkCtx(vouchers: Record<string, Row>, tx: Row, opts: { failOn?: string } = {}) {
     const sent: Array<{ method: string; path: string; body?: unknown }> = [];
+    let linked = 0;
     const client = {
       async request(req: { method: string; path: string; body?: unknown }) {
+        const id = req.path.split("/")[2] ?? "";
         if (req.method === "PUT") {
+          if (opts.failOn === id) throw new Error("sevDesk 422: rejected.");
           sent.push(req);
-          voucher.paidAmount = Math.abs(num((req.body as Row).amount));
-          voucher.status = "1000";
-          tx.status = "400";
-          return { status: 200, data: { objects: voucher } };
+          const v = vouchers[id]!;
+          const amount = Math.abs(num((req.body as Row).amount));
+          v.paidAmount = num(v.paidAmount) + amount;
+          v.status = num(v.paidAmount) >= num(v.sumGross) ? "1000" : "750";
+          linked += amount;
+          tx.status = linked >= Math.abs(num(tx.amount)) ? "400" : "200";
+          return { status: 200, data: { objects: v } };
         }
-        if (req.path.startsWith("/Voucher/")) return { status: 200, data: { objects: [voucher] } };
-        if (req.path.startsWith("/CheckAccountTransaction/")) {
-          return { status: 200, data: { objects: [tx] } };
+        if (req.path.startsWith("/Voucher/")) {
+          const v = vouchers[id];
+          return { status: 200, data: { objects: v ? [v] : [] } };
         }
+        if (req.path.startsWith("/CheckAccountTransaction/")) return { status: 200, data: { objects: [tx] } };
         return { status: 404, data: {} };
       },
     };
@@ -624,99 +632,215 @@ describe("sevdesk_link_transaction", () => {
     return typeof v === "number" ? v : Number.parseFloat(String(v));
   }
 
-  const openVoucher = (): Row => ({
-    id: "156016310",
+  const voucher = (over: Row = {}): Row => ({
     status: "100",
     creditDebit: "C",
     sumGross: "16.99",
     paidAmount: 0,
     enshrined: null,
+    ...over,
   });
-  const openTx = (): Row => ({
+  const openTx = (over: Row = {}): Row => ({
     id: "1869078520",
     status: "100",
     amount: "-16.99",
     valueDate: "2026-06-24T00:00:00+02:00",
     checkAccount: { id: "6232758", objectName: "CheckAccount" },
+    ...over,
   });
 
   it("books the voucher against the existing transaction", async () => {
-    const { ctx, sent } = linkCtx(openVoucher(), openTx());
-    const result = (await link.handler(
-      { voucherId: "156016310", transactionId: "1869078520" },
-      ctx,
-    )) as { linked: boolean; voucher: { status: string }; transaction: { status: string } };
+    const { ctx, sent } = linkCtx({ "156016310": voucher() }, openTx());
+    const result = (await link.handler({ voucherId: "156016310", transactionId: "1869078520" }, ctx)) as {
+      linked: boolean;
+      unassigned: number;
+      vouchers: Array<{ status: string; paidAmount: number }>;
+      transaction: { status: string };
+    };
     expect(sent).toHaveLength(1);
-    expect(sent[0].path).toBe("/Voucher/156016310/bookAmount");
-    const body = sent[0].body as Row;
-    expect(body.amount).toBe(-16.99);
-    expect(body.date).toBe("2026-06-24");
-    expect(body.createFeed).toBe(false);
-    expect(body.type).toBe("FULL_PAYMENT");
-    expect(body.checkAccount).toEqual({ id: 6232758, objectName: "CheckAccount" });
-    expect(body.checkAccountTransaction).toEqual({
-      id: 1869078520,
-      objectName: "CheckAccountTransaction",
+    expect(sent[0]!.path).toBe("/Voucher/156016310/bookAmount");
+    expect(sent[0]!.body).toEqual({
+      amount: -16.99,
+      date: "2026-06-24",
+      type: "FULL_PAYMENT",
+      checkAccount: { id: 6232758, objectName: "CheckAccount" },
+      checkAccountTransaction: { id: 1869078520, objectName: "CheckAccountTransaction" },
+      createFeed: false,
     });
     expect(result.linked).toBe(true);
-    expect(result.voucher.status).toBe("bezahlt");
+    expect(result.unassigned).toBe(0);
+    expect(result.vouchers[0]).toMatchObject({ status: "bezahlt", paidAmount: 16.99 });
     expect(result.transaction.status).toBe("gebucht");
   });
 
-  it("books part of a split payment", async () => {
-    const tx = { ...openTx(), amount: "-27.99" };
-    const voucher = { ...openVoucher(), sumGross: "17.82" };
-    const { ctx, sent } = linkCtx(voucher, tx);
+  it("books revenue against incoming money with a positive amount", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher({ creditDebit: "D" }) }, openTx({ amount: "16.99" }));
     await link.handler({ voucherId: "1", transactionId: "2" }, ctx);
-    expect((sent[0].body as Row).amount).toBe(-17.82);
-    expect((sent[0].body as Row).type).toBe("FULL_PAYMENT");
+    expect((sent[0]!.body as Row).amount).toBe(16.99);
+  });
+
+  it("books a split payment in one call", async () => {
+    const { ctx, sent } = linkCtx(
+      { "1": voucher({ sumGross: "17.82" }), "2": voucher({ sumGross: "10.17" }) },
+      openTx({ amount: "-27.99" }),
+    );
+    const result = (await link.handler(
+      { transactionId: "9", allocations: [{ voucherId: "1" }, { voucherId: "2" }] },
+      ctx,
+    )) as { total: number; unassigned: number; transaction: { status: string } };
+    expect(sent.map((r) => (r.body as Row).amount)).toEqual([-17.82, -10.17]);
+    expect(result).toMatchObject({ total: 27.99, unassigned: 0, transaction: { status: "gebucht" } });
+  });
+
+  it("refuses a split payment that exceeds the transaction, before booking anything", async () => {
+    const { ctx, sent } = linkCtx(
+      { "1": voucher({ sumGross: "60" }), "2": voucher({ sumGross: "60" }) },
+      openTx({ amount: "-100" }),
+    );
+    await expect(
+      link.handler({ transactionId: "9", allocations: [{ voucherId: "1" }, { voucherId: "2" }] }, ctx),
+    ).rejects.toThrow(/add up to 120, more than transaction 9 holds \(100\)/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses a transaction that is already partly linked", async () => {
+    const { ctx, sent } = linkCtx({ "2": voucher({ sumGross: "60" }) }, openTx({ amount: "-100", status: "200" }));
+    await expect(link.handler({ voucherId: "2", transactionId: "9" }, ctx)).rejects.toThrow(
+      /already linked to a voucher or invoice.*sevDesk UI/,
+    );
+    expect(sent).toEqual([]);
+  });
+
+  it("reports what was booked when a later booking in a split fails", async () => {
+    const { ctx, sent } = linkCtx(
+      { "1": voucher({ sumGross: "10" }), "2": voucher({ sumGross: "10" }), "3": voucher({ sumGross: "10" }) },
+      openTx({ amount: "-30" }),
+      { failOn: "2" },
+    );
+    await expect(
+      link.handler(
+        { transactionId: "9", allocations: [{ voucherId: "1" }, { voucherId: "2" }, { voucherId: "3" }] },
+        ctx,
+      ),
+    ).rejects.toThrow(/Booking voucher 2 on transaction 9 did not confirm.*Booked before it: 1\. Not attempted: 3\./);
+    expect(sent).toHaveLength(1);
+  });
+
+  it("treats a failed first booking as unknown, not as nothing booked", async () => {
+    const { ctx } = linkCtx(
+      { "1": voucher({ sumGross: "10" }), "2": voucher({ sumGross: "10" }) },
+      openTx({ amount: "-20" }),
+      { failOn: "1" },
+    );
+    await expect(
+      link.handler({ transactionId: "9", allocations: [{ voucherId: "1" }, { voucherId: "2" }] }, ctx),
+    ).rejects.toThrow(/voucher 1 .*may or may not have saved it\. Booked before it: none\. Not attempted: 2\./);
+  });
+
+  it("refuses the same voucher written with leading zeros", async () => {
+    const { ctx, sent } = linkCtx({ "50": voucher({ sumGross: "50" }) }, openTx({ amount: "-100" }));
+    await expect(
+      link.handler({ transactionId: "9", allocations: [{ voucherId: "50" }, { voucherId: "050" }] }, ctx),
+    ).rejects.toThrow(/Voucher 50 appears twice/);
+    expect(sent).toEqual([]);
+  });
+
+  it("never books more than the gross amount when paidAmount is negative", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher({ sumGross: "50", paidAmount: -20 }) }, openTx({ amount: "-100" }));
+    await link.handler({ voucherId: "1", transactionId: "9" }, ctx);
+    expect((sent[0]!.body as Row).amount).toBe(-50);
+  });
+
+  it("refuses foreign-currency vouchers", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher({ currency: "USD" }) }, openTx());
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/USD/);
+    expect(sent).toEqual([]);
+  });
+
+  it("still reports success when the read-back fails after booking", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher() }, openTx());
+    const inner = ctx.client.request.bind(ctx.client);
+    (ctx.client as unknown as { request: unknown }).request = async (req: { method: string; path: string }) => {
+      if (req.method === "GET" && sent.length > 0) throw new Error("sevDesk 503");
+      return inner(req as never);
+    };
+    const result = (await link.handler({ voucherId: "1", transactionId: "2" }, ctx)) as { linked: boolean };
+    expect(result.linked).toBe(true);
+    expect(sent).toHaveLength(1);
   });
 
   it("books a partial amount as type N", async () => {
-    const { ctx, sent } = linkCtx({ ...openVoucher(), sumGross: "30" }, { ...openTx(), amount: "-10" });
+    const { ctx, sent } = linkCtx({ "1": voucher({ sumGross: "30" }) }, openTx({ amount: "-10" }));
     await link.handler({ voucherId: "1", transactionId: "2", amount: 10 }, ctx);
-    expect((sent[0].body as Row).type).toBe("N");
+    expect((sent[0]!.body as Row).type).toBe("N");
   });
 
   it("refuses an already paid voucher", async () => {
-    const { ctx, sent } = linkCtx({ ...openVoucher(), status: "1000" }, openTx());
+    const { ctx, sent } = linkCtx({ "1": voucher({ status: "1000" }) }, openTx());
     await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/already paid/);
     expect(sent).toEqual([]);
   });
 
   it("refuses an already booked transaction", async () => {
-    const { ctx, sent } = linkCtx(openVoucher(), { ...openTx(), status: "400" });
+    const { ctx, sent } = linkCtx({ "1": voucher() }, openTx({ status: "400" }));
     await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/gebucht/);
     expect(sent).toEqual([]);
   });
 
-  it("refuses a sign mismatch", async () => {
-    const { ctx, sent } = linkCtx(openVoucher(), { ...openTx(), amount: "16.99" });
-    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/Sign mismatch/);
+  it("refuses an expense voucher against incoming money", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher() }, openTx({ amount: "16.99" }));
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/Direction mismatch/);
     expect(sent).toEqual([]);
   });
 
   it("refuses an amount above the transaction", async () => {
-    const { ctx, sent } = linkCtx({ ...openVoucher(), sumGross: "20" }, openTx());
-    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(
-      /exceeds the transaction/,
+    const { ctx, sent } = linkCtx({ "1": voucher({ sumGross: "20" }) }, openTx());
+    await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/more than transaction/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses an amount above the voucher's open amount", async () => {
+    const { ctx, sent } = linkCtx({ "1": voucher() }, openTx({ amount: "-50" }));
+    await expect(link.handler({ voucherId: "1", transactionId: "2", amount: 20 }, ctx)).rejects.toThrow(
+      /exceeds its open amount/,
     );
     expect(sent).toEqual([]);
   });
 
   it("refuses drafts", async () => {
-    const { ctx, sent } = linkCtx({ ...openVoucher(), status: "50" }, openTx());
+    const { ctx, sent } = linkCtx({ "1": voucher({ status: "50" }) }, openTx());
     await expect(link.handler({ voucherId: "1", transactionId: "2" }, ctx)).rejects.toThrow(/draft/);
     expect(sent).toEqual([]);
   });
 
-  it("previews without sending under dryRun", async () => {
-    const { ctx, sent } = linkCtx(openVoucher(), openTx());
+  it("refuses malformed argument combinations", async () => {
+    const { ctx } = linkCtx({ "1": voucher() }, openTx());
+    await expect(link.handler({ transactionId: "2" }, ctx)).rejects.toThrow(/exactly one of voucherId/);
+    await expect(
+      link.handler({ transactionId: "2", voucherId: "1", allocations: [{ voucherId: "1" }] }, ctx),
+    ).rejects.toThrow(/exactly one of voucherId/);
+    await expect(
+      link.handler({ transactionId: "2", allocations: [{ voucherId: "1" }, { voucherId: "1" }] }, ctx),
+    ).rejects.toThrow(/appears twice/);
+    await expect(link.handler({ transactionId: "2", allocations: [{ voucherId: "x" }] }, ctx)).rejects.toThrow(
+      /Allocation 1: voucherId/,
+    );
+    await expect(link.handler({ transactionId: "2", voucherId: "1", amount: "abc" }, ctx)).rejects.toThrow(
+      /amount must be a number/,
+    );
+  });
+
+  it("previews every booking without sending under dryRun", async () => {
+    const { ctx, sent } = linkCtx(
+      { "1": voucher({ sumGross: "60" }), "2": voucher({ sumGross: "30" }) },
+      openTx({ amount: "-100" }),
+    );
     const result = (await link.handler(
-      { voucherId: "1", transactionId: "2", dryRun: true },
+      { transactionId: "9", allocations: [{ voucherId: "1" }, { voucherId: "2" }], dryRun: true },
       ctx,
-    )) as { dryRun: boolean };
-    expect(result.dryRun).toBe(true);
+    )) as { dryRun: boolean; unassigned: number; wouldSend: unknown[] };
+    expect(result).toMatchObject({ dryRun: true, unassigned: 10 });
+    expect(result.wouldSend).toHaveLength(2);
     expect(sent).toEqual([]);
   });
 });
@@ -745,11 +869,15 @@ describe("sevdesk_reset_voucher_to_open", () => {
     return { ctx, sent };
   }
 
-  it("resets a partially paid voucher", async () => {
-    const { ctx, sent } = resetCtx({ id: "1", status: "750", paidAmount: -21.42, enshrined: null });
-    const result = (await reset.handler({ voucherId: "1" }, ctx)) as { status: string; changed: boolean };
-    expect(sent[0].path).toBe("/Voucher/1/resetToOpen");
-    expect(result).toMatchObject({ changed: true, status: "offen" });
+  it("resets a partially paid voucher and reports what it removed", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "750", paidAmount: 21.42, currency: "EUR", enshrined: null });
+    const result = await reset.handler({ voucherId: "1" }, ctx);
+    expect(sent[0]!.path).toBe("/Voucher/1/resetToOpen");
+    expect(result).toMatchObject({
+      changed: true,
+      status: "offen",
+      before: { status: "teilbezahlt", paidAmount: 21.42 },
+    });
   });
 
   it("leaves an open voucher alone", async () => {
@@ -762,6 +890,19 @@ describe("sevdesk_reset_voucher_to_open", () => {
   it("refuses enshrined vouchers", async () => {
     const { ctx, sent } = resetCtx({ id: "1", status: "1000", enshrined: "2026-01-01" });
     await expect(reset.handler({ voucherId: "1" }, ctx)).rejects.toThrow(/enshrined/);
+    expect(sent).toEqual([]);
+  });
+
+  it("refuses foreign-currency vouchers", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "1000", currency: "usd", enshrined: null });
+    await expect(reset.handler({ voucherId: "1" }, ctx)).rejects.toThrow(/USD.*exchange rate/);
+    expect(sent).toEqual([]);
+  });
+
+  it("previews without sending under dryRun", async () => {
+    const { ctx, sent } = resetCtx({ id: "1", status: "1000", paidAmount: 5, enshrined: null });
+    const result = await reset.handler({ voucherId: "1", dryRun: true }, ctx);
+    expect(result).toMatchObject({ dryRun: true, before: { paidAmount: 5 } });
     expect(sent).toEqual([]);
   });
 });

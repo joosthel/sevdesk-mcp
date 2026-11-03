@@ -48,6 +48,21 @@ Run in this order; each step's output feeds the next conversation turn:
    dryRun once confirmed.
 3. Foreign supplier without VAT? Do the §13b check below before booking.
 
+## Linking receipts to bank payments
+
+Needs `SEVDESK_ALLOW_BOOKING=true` (check `sevdesk_ping`). The voucher must
+be open (100), not a draft.
+
+1. `sevdesk_reconcile_transactions` or `sevdesk_list_transactions` to find
+   the matching open transaction.
+2. `sevdesk_link_transaction` with `dryRun: true`; show the user the
+   bookings, then repeat without dryRun once confirmed.
+3. One payment covering several receipts: pass all of them as
+   `allocations` in one call. A transaction that is already partly linked
+   is refused; finish it in the sevDesk UI.
+4. Wrong link? `sevdesk_reset_voucher_to_open` removes ALL payments from
+   the voucher, not just this one. Check the voucher first.
+
 ## §13b reverse-charge check (foreign supplier, 0 % VAT)
 
 1. Is the supplier established abroad? The contact's country is

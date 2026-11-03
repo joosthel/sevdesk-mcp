@@ -9,11 +9,12 @@ import { MAX_OUTPUT_CHARS, buildServer, capOutput, tools } from "../src/server.j
 
 type Row = Record<string, unknown>;
 
-async function connect(opts: { readOnly?: boolean; fetchCalls?: string[] } = {}) {
+async function connect(opts: { readOnly?: boolean; allowBooking?: boolean; fetchCalls?: string[] } = {}) {
   const config = loadConfig({
     SEVDESK_API_TOKEN: "t",
     SEVDESK_RATE_LIMIT: "0",
     SEVDESK_READ_ONLY: opts.readOnly ? "true" : "false",
+    SEVDESK_ALLOW_BOOKING: opts.allowBooking ? "true" : "false",
   });
   const client = new SevdeskClient(config, {
     fetchFn: (async (url: RequestInfo | URL) => {
@@ -74,6 +75,45 @@ describe("buildServer handlers", () => {
     const r = await s.call("sevdesk_create_invoice", { contactId: 1, taxRuleId: "1", positions: [] });
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/SEVDESK_READ_ONLY/);
+    expect(fetchCalls).toHaveLength(0);
+    await s.close();
+  });
+
+  it("lists booking tools only with SEVDESK_ALLOW_BOOKING and writes enabled", async () => {
+    const booking = ["sevdesk_link_transaction", "sevdesk_reset_voucher_to_open"];
+    const off = await connect();
+    const offNames = (await off.list()).map((t) => t.name);
+    expect(offNames.filter((n) => booking.includes(n))).toEqual([]);
+    expect(offNames).toContain("sevdesk_create_voucher");
+    await off.close();
+
+    const on = await connect({ allowBooking: true });
+    const onTools = await on.list();
+    expect(onTools.map((t) => t.name)).toEqual(expect.arrayContaining(booking));
+    expect(onTools.find((t) => t.name === "sevdesk_reset_voucher_to_open")!.annotations.destructiveHint).toBe(true);
+    await on.close();
+
+    const ro = await connect({ readOnly: true, allowBooking: true });
+    expect((await ro.list()).map((t) => t.name).filter((n) => booking.includes(n))).toEqual([]);
+    await ro.close();
+  });
+
+  it("gives the read-only refusal for a booking tool even with SEVDESK_ALLOW_BOOKING", async () => {
+    const fetchCalls: string[] = [];
+    const s = await connect({ readOnly: true, allowBooking: true, fetchCalls });
+    const r = await s.call("sevdesk_reset_voucher_to_open", { voucherId: "1" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/SEVDESK_READ_ONLY/);
+    expect(fetchCalls).toHaveLength(0);
+    await s.close();
+  });
+
+  it("refuses a booking tool at call time without SEVDESK_ALLOW_BOOKING, before any HTTP", async () => {
+    const fetchCalls: string[] = [];
+    const s = await connect({ fetchCalls });
+    const r = await s.call("sevdesk_link_transaction", { transactionId: "1", voucherId: "2" });
+    expect(r.isError).toBe(true);
+    expect(r.content[0]!.text).toMatch(/SEVDESK_ALLOW_BOOKING/);
     expect(fetchCalls).toHaveLength(0);
     await s.close();
   });

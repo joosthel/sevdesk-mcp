@@ -77,7 +77,7 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 ## Tools
 
-**24 Tools decken alle 151 API-Operationen ab.**
+**26 Tools decken alle 151 API-Operationen ab.**
 
 ### Prüfung
 
@@ -94,6 +94,8 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 ### Alltag
 
 `sevdesk_ping` · `sevdesk_summarize` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_receipt_guidance` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher` · `sevdesk_set_tax_rule` · `sevdesk_create_invoice` · `sevdesk_get_invoice_pdf` · `sevdesk_mark_invoice_sent`
+
+**Buchen** (nur mit `SEVDESK_ALLOW_BOOKING=true`): `sevdesk_link_transaction` bucht Belege auf einen bestehenden Bankumsatz, wie das Zuordnen in der sevDesk-Oberfläche; eine Sammelzahlung geht in einem Aufruf. `sevdesk_reset_voucher_to_open` entfernt alle Zahlungen eines Belegs wieder.
 
 Highlights: `sevdesk_summarize` aggregiert Rechnungen oder Belege serverseitig — Anzahl und Netto-/Steuer-/Brutto-Summen, gruppiert nach Monat, Status oder Kontakt — Fragen wie „Umsatz in Q2“ oder „Ausgaben je Lieferant“ kosten damit ein paar hundert Tokens, egal wie groß das Buchungsjournal ist. `sevdesk_receipt_guidance` beantwortet „welche Kombinationen aus Buchungskonto, Steuerregel und Steuersatz akzeptiert sevDesk tatsächlich" aus sevDesks eigener Validierungstabelle. `sevdesk_set_tax_rule` bucht einen Beleg-Entwurf mit Leitplanken auf eine andere Steuerregel um. `sevdesk_create_invoice` erstellt immer **Entwürfe** — nichts erreicht einen Kunden ohne Review. `sevdesk_get_invoice_pdf` speichert das gerenderte PDF, ohne den Versandstatus der Rechnung anzufassen.
 
@@ -139,6 +141,7 @@ des Servers und die Tool-Beschreibungen tragen das Wesentliche.
 | `SEVDESK_TIMEOUT_MS` | `30000` | Timeout pro Anfrage (ganze Zahl > 0) |
 | `SEVDESK_MAX_RETRIES` | `3` | Ganze Zahl >= 0; `0` heißt: gar keine Wiederholungen. Wiederholungen mit gejittertem Backoff und begrenztem `Retry-After`. Ein 429 wird immer wiederholt (der gedrosselte Aufruf lief nie); ein 5xx oder Netzwerkfehler nur bei **Lesezugriffen** — ein Schreibzugriff wird bei unklarem Ausgang nie erneut gesendet, ein Timeout kann also keinen doppelten Entwurf erzeugen |
 | `SEVDESK_RATE_LIMIT` | `4` | Clientseitige Drosselung in Requests/Sekunde (Token-Bucket), damit Audit-Abfragesalven nicht mit sevDesks Limit kollidieren. `0` deaktiviert |
+| `SEVDESK_ALLOW_BOOKING` | `false` | Boolean, gleiche Werte. Listet die Buchungs-Tools (`sevdesk_link_transaction`, `sevdesk_reset_voucher_to_open`), die Zahlungen buchen und entfernen. Im Nur-Lesen-Modus wirkungslos. Schränkt `sevdesk_call` nicht ein |
 | `SEVDESK_DEBUG` | `false` | Boolean, gleiche Werte. Loggt `METHOD /pfad -> status` auf stderr — nie Query-Strings, Bodies oder den Token |
 
 Diese Variablen gehören in den `env`-Block deines MCP-Clients — das ist der
@@ -162,6 +165,7 @@ Der Nur-Lesen-Modus greift dreifach: Schreib-Tools verschwinden aus der Tool-Lis
 
 - Jedes Schreib-Tool akzeptiert ein `dryRun` pro Aufruf und beachtet das globale `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` und `sevdesk_create_invoice` erstellen **Entwürfe** — nichts wird stillschweigend gebucht oder versendet.
+- Zahlungen mit den kuratierten Tools buchen ist ein eigenes Opt-in: Ohne `SEVDESK_ALLOW_BOOKING=true` sind die Buchungs-Tools ausgeblendet und werden verweigert (`sevdesk_call` bleibt der uneingeschränkte Notausgang). `sevdesk_link_transaction` nimmt nur offene Bankumsätze und prüft jeden Beleg und die Summe vor der ersten Buchung. `sevdesk_reset_voucher_to_open` ist als destruktiv markiert. Beide verweigern Fremdwährungsbelege.
 - `sevdesk_set_tax_rule` und `sevdesk_mark_invoice_sent` verweigern festgeschriebene Dokumente und verifizieren ihre Änderung durch erneutes Lesen.
 - Es gibt bewusst **kein E-Mail-Versand-Tool**, und `sevdesk_get_invoice_pdf` überschreibt niemals eine bestehende Datei.
 - **Gebuchte und bezahlte Belege sind bewusst vom API-Umbuchen ausgenommen.** Die sevDesk-API ändert nur Entwürfe, und das Zurücksetzen eines bezahlten Fremdwährungsbelegs rechnet dessen EUR-Beträge zum heutigen Kurs neu — historische Werte ändern sich stillschweigend. Gebuchte Belege korrigierst du in der sevDesk-Oberfläche, wo die Originalbeträge neben dem Beleg sichtbar bleiben.

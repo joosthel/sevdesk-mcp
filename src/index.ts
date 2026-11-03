@@ -37,6 +37,7 @@ async function main(): Promise<void> {
     `sevdesk-mcp ${VERSION} ready · ${tools.length} tools · ` +
       `${catalog.operationCount} API operations · ` +
       `mode: ${config.readOnly ? "READ-ONLY" : config.dryRun ? "DRY-RUN" : "read/write"}` +
+      (config.allowBooking && !config.readOnly ? " + booking" : "") +
       (envFile ? ` · loaded ${envFile}` : ""),
   );
 }

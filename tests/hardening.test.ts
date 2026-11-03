@@ -137,8 +137,25 @@ describe("assertAllowedPath", () => {
 });
 
 describe("annotations and output cap", () => {
-  it("only sevdesk_call is destructive", () => {
-    expect(tools.filter((t) => t.destructive).map((t) => t.name)).toEqual(["sevdesk_call"]);
+  it("only sevdesk_call and the payment reset are destructive", () => {
+    expect(tools.filter((t) => t.destructive).map((t) => t.name).sort()).toEqual([
+      "sevdesk_call",
+      "sevdesk_reset_voucher_to_open",
+    ]);
+  });
+
+  it("marks exactly the payment tools as booking tools", () => {
+    expect(tools.filter((t) => t.booking).map((t) => t.name).sort()).toEqual([
+      "sevdesk_link_transaction",
+      "sevdesk_reset_voucher_to_open",
+    ]);
+    expect(tools.filter((t) => t.booking).every((t) => t.mutating)).toBe(true);
+  });
+
+  it("parses SEVDESK_ALLOW_BOOKING strictly and defaults to off", () => {
+    expect(loadConfig(env({})).allowBooking).toBe(false);
+    expect(loadConfig(env({ SEVDESK_ALLOW_BOOKING: "true" })).allowBooking).toBe(true);
+    expect(() => loadConfig(env({ SEVDESK_ALLOW_BOOKING: "maybe" }))).toThrow(/SEVDESK_ALLOW_BOOKING/);
   });
 
   it("truncates oversized output with a final notice", () => {

@@ -20,6 +20,12 @@ export interface Config {
   debug: boolean;
   /** Directories the audit tools are allowed to read receipt files from. */
   allowedReceiptDirs: string[];
+  /**
+   * When true, the booking tools (book a voucher against a bank transaction,
+   * remove a voucher's payments) are listed and callable. Off by default.
+   * Covers the curated tools only; sevdesk_call is not gated by it.
+   */
+  allowBooking: boolean;
 }
 
 function bool(name: string, value: string | undefined, fallback = false): boolean {
@@ -115,6 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): Config {
     rateLimitPerSec: rate("SEVDESK_RATE_LIMIT", env.SEVDESK_RATE_LIMIT, 4),
     debug: bool("SEVDESK_DEBUG", env.SEVDESK_DEBUG),
     allowedReceiptDirs: parseReceiptDirs(env.SEVDESK_RECEIPT_DIRS),
+    allowBooking: bool("SEVDESK_ALLOW_BOOKING", env.SEVDESK_ALLOW_BOOKING),
   };
 }
 

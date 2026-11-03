@@ -29,6 +29,12 @@
           "format": "boolean"
         },
         {
+          "name": "SEVDESK_ALLOW_BOOKING",
+          "description": "List the booking tools that link vouchers to bank transactions (default false)",
+          "isRequired": false,
+          "format": "boolean"
+        },
+        {
           "name": "SEVDESK_RATE_LIMIT",
           "description": "Client-side request pacing in requests/second (default 4; 0 disables)",
           "isRequired": false,

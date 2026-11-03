@@ -33,6 +33,8 @@ export const tools: ToolDef[] = [...resourceTools, ...auditTools, ...discoveryTo
  */
 export function buildServer(ctx: ToolContext): Server {
   const byName = new Map(tools.map((t) => [t.name, t]));
+  const writesOn = !ctx.config.readOnly;
+  const bookingOn = writesOn && ctx.config.allowBooking === true;
 
   const server = new Server(
     { name: "sevdesk-mcp", version: VERSION },
@@ -40,7 +42,8 @@ export function buildServer(ctx: ToolContext): Server {
       capabilities: { tools: {} },
       instructions:
         `sevDesk accounting (German SMB bookkeeping) for AI agents. ` +
-        `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes default to drafts"}. ` +
+        `Mode: ${ctx.config.readOnly ? "READ-ONLY — write tools are hidden" : ctx.config.dryRun ? "DRY-RUN — writes preview instead of sending" : "read/write — writes default to drafts"}` +
+        `${bookingOn ? "; booking tools enabled (SEVDESK_ALLOW_BOOKING) — they book and remove payments, confirm each booking with the user" : ""}. ` +
         `Start with sevdesk_ping: it verifies the token and reports the account's ` +
         `bookkeeping generation. Tax rules are never guessed: write tools that need one ` +
         `take taxRuleId explicitly, and sevdesk_receipt_guidance lists what each booking ` +
@@ -58,8 +61,10 @@ export function buildServer(ctx: ToolContext): Server {
   server.setRequestHandler("tools/list", async () => ({
     tools: tools
       // Hide write tools entirely in read-only mode so they cannot be attempted.
-      // Tools with listInReadOnly decide per call and stay visible.
+      // Tools with listInReadOnly decide per call and stay visible. Booking
+      // tools additionally need SEVDESK_ALLOW_BOOKING.
       .filter((t) => !(ctx.config.readOnly && t.mutating && !t.listInReadOnly))
+      .filter((t) => !t.booking || bookingOn)
       .map((t) => ({
         name: t.name,
         title: t.title,
@@ -69,9 +74,9 @@ export function buildServer(ctx: ToolContext): Server {
             ? " ⚠️ This tool can change data in sevDesk."
             : ""),
         inputSchema: t.inputSchema,
-        // Standard MCP hints so clients can shape confirmation UX. The curated
-        // writes create drafts or flip reversible flags; only tools that can
-        // delete (sevdesk_call) declare themselves destructive.
+        // Standard MCP hints so clients can shape confirmation UX. Tools that
+        // can delete (sevdesk_call) or remove payments (reset_voucher_to_open)
+        // declare themselves destructive.
         annotations: {
           readOnlyHint: !t.mutating,
           destructiveHint: t.destructive === true,
@@ -100,6 +105,20 @@ export function buildServer(ctx: ToolContext): Server {
           {
             type: "text" as const,
             text: `Refused: '${name}' modifies data in sevDesk, but the server runs with SEVDESK_READ_ONLY=true.`,
+          },
+        ],
+      };
+    }
+
+    if (tool.booking && !bookingOn) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `Refused: '${name}' books or removes payments in sevDesk. Booking tools are off ` +
+              "unless the server runs with SEVDESK_ALLOW_BOOKING=true.",
           },
         ],
       };

@@ -38,6 +38,11 @@ export interface ToolDef {
   listInReadOnly?: boolean;
   /** Irreversible writes (deletes) — sets the MCP destructiveHint. */
   destructive?: boolean;
+  /**
+   * Books or removes payments on vouchers. Hidden and
+   * refused unless SEVDESK_ALLOW_BOOKING=true.
+   */
+  booking?: boolean;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 
