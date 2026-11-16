@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.6.0 — 2026-11-16
 
 **Breaking**
 
@@ -8,22 +8,21 @@
   `payDate` and `paidAmount` unless `SEVDESK_ALLOW_BOOKING=true`, dry runs
   included. The default (status 50, draft) is unchanged. Create the voucher
   as a draft, or set the flag.
-- `sevdesk_call` also refuses `voucherResetToDraft`, `invoiceResetToDraft`,
-  `creditNoteResetToDraft` and `createPrivateTransactionRule`, and the
-  generic writes that book: `updateCheckAccountTransaction` with a `status`,
-  `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`,
-  `voucherFactorySaveVoucher` with the same on `voucher`, `createTransaction`
-  with a status other than 100, and any write whose body or query carries
-  `paidAmount`, `payDate` or a transfer link, or sets an invoice, credit
-  note or voucher to 750 (partly paid) or 1000 (paid). Array and string bodies on
-  writes are refused. `sevdesk_describe_operation` says so.
-- `sevdesk_call` refuses the booking operations (`bookVoucher`,
-  `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
-  `invoiceResetToOpen`, `creditNoteResetToOpen`, and
-  `createPrivateTransactionRule`, which marks future transactions private) unless
-  `SEVDESK_ALLOW_BOOKING=true`, dry runs included. If you book invoice
-  payments through `sevdesk_call`, set the flag.
-  `sevdesk_describe_operation` marks these operations.
+- `sevdesk_call` refuses everything that books unless
+  `SEVDESK_ALLOW_BOOKING=true`, dry runs included:
+  - the operations `bookVoucher`, `bookInvoice`, `bookCreditNote`, their
+    `*ResetToOpen` and `*ResetToDraft` (a reset to draft unlinks payments),
+    and `createPrivateTransactionRule` (marks future transactions private);
+  - `updateCheckAccountTransaction` with a `status`, `createTransaction` with
+    a status other than 100, `updateVoucher` with a `status` other than 50,
+    and `voucherFactorySaveVoucher` with the same on `voucher`;
+  - any write whose body or query carries `paidAmount`, `payDate` or a
+    transfer link, or sets an invoice, credit note or voucher to 750 (partly
+    paid) or 1000 (paid).
+
+  Array and string bodies on writes are refused. `sevdesk_describe_operation`
+  marks the affected operations. If you book invoice payments through
+  `sevdesk_call`, set the flag.
 
 **Added**
 
@@ -61,16 +60,19 @@
   and settle the voucher.
   It also returns `warnings` (dry run and result) when the bank text does
   not mention the supplier, and a `verified` flag from the read-back.
+  Every booking is sent as type `N`: a live test showed that sevDesk refuses
+  `FULL_PAYMENT` for money out (422), while `N` settles the voucher at its
+  full open amount, the same as the UI.
+- `sevdesk_reset_voucher_to_open`: the transaction becomes open again once
+  every voucher on it is reset; until then it stays linked (status 200).
+- The booking tools were tested live on a real account with throwaway data:
+  split payment, partial link, Skonto, revenue, reset of a split, mark
+  private, uploads, and editing, finalizing and deleting a draft.
 - `ToolDef.destructive` sets the MCP `destructiveHint` per tool instead of
   `false` for all.
 
 **Changed**
 
-- `sevdesk_link_transaction` books every payment as type `N`. Expense
-  payments were sent as `FULL_PAYMENT`, which sevDesk refuses for money out.
-  `N` settles the voucher when the amount is its open amount.
-- `sevdesk_reset_voucher_to_open`: a transaction becomes open again only once
-  every voucher on it is reset.
 - The bundled OpenAPI spec is sevDesk's current one. `render`,
   `changeParameter` and `sendByWithRender` now document the full PDF
   (Base64 `pdf`) instead of `thumbs`/`pages` (sevDesk change of 2026-04-07),

@@ -6,7 +6,7 @@
 
 Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege und Rechnungen auflisten und anlegen, Banktransaktionen abgleichen, alle 154 API-Operationen erreichen — und Prüfungen laufen lassen, die wissen, wie eine *falsche* Buchung aussieht: ein ausländischer Lieferant als inländische 0 % statt Reverse Charge §13b, eine Steuerregel, die das Buchungskonto nicht erlaubt, eine Zahlung ohne Beleg dahinter.
 
-> **Status: v0.5.0.** Gegen ein echtes sevDesk-Konto validiert (Buchhaltungssystem 2.0) — wo die Prüfung genau die Klasse von Fehlbuchungen fand, für die sie gebaut wurde. Siehe [CHANGELOG.md](CHANGELOG.md).
+> **Status: v0.6.0.** Gegen ein echtes sevDesk-Konto validiert (Buchhaltungssystem 2.0) — wo die Prüfung genau die Klasse von Fehlbuchungen fand, für die sie gebaut wurde. Siehe [CHANGELOG.md](CHANGELOG.md).
 
 ## Schnellstart
 
