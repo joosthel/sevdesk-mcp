@@ -6,7 +6,7 @@
 
 Connect Claude (or any MCP client) to your sevDesk account: list and create vouchers and invoices, reconcile bank transactions, reach all 154 API operations — and run audits that know what a *wrong* booking looks like: a foreign supplier booked as domestic 0 % instead of Reverse Charge §13b, a tax rule the booking account doesn't allow, a payment with no receipt behind it.
 
-> **Status: v0.5.0.** Live-validated against a real sevDesk account (bookkeeping system 2.0) — where the audit found exactly the class of mis-booking it was built for. See [CHANGELOG.md](CHANGELOG.md).
+> **Status: v0.6.0.** Live-validated against a real sevDesk account (bookkeeping system 2.0) — where the audit found exactly the class of mis-booking it was built for. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Quick start
 

@@ -2,7 +2,7 @@
   "manifest_version": "0.2",
   "name": "sevdesk-mcp",
   "display_name": "sevDesk",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "sevDesk accounting for Claude: vouchers, invoices, bank reconciliation and a built-in VAT audit layer.",
   "long_description": "The complete MCP server for sevDesk: every API endpoint via a searchable catalogue, guarded write tools (drafts by default, dry-run everywhere), and audits that know what a wrong booking looks like — reverse-charge mis-bookings, account/tax-rule mismatches, duplicates, missing receipts.",
   "author": { "name": "Joost Helfers", "url": "https://github.com/joosthel" },
