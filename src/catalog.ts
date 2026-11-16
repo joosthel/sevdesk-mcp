@@ -73,6 +73,8 @@ export const BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
   "voucherResetToOpen",
   "invoiceResetToOpen",
   "creditNoteResetToOpen",
+  // A rule marks future transactions private, i.e. books them automatically.
+  "createPrivateTransactionRule",
 ]);
 
 export function describeOperation(op: Operation): string {
@@ -83,7 +85,7 @@ export function describeOperation(op: Operation): string {
     `mutating: ${op.mutating ? "yes — changes data in sevDesk" : "no"}`,
   ];
   if (BOOKING_OPERATIONS.has(op.operationId)) {
-    lines.push("booking: yes — books or removes payments; needs SEVDESK_ALLOW_BOOKING=true");
+    lines.push("booking: yes — books or removes payments, or books transactions automatically; needs SEVDESK_ALLOW_BOOKING=true");
   }
   if (op.summary) lines.push(`summary: ${op.summary}`);
   if (op.description) lines.push(`description: ${op.description}`);

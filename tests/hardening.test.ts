@@ -1,4 +1,5 @@
 /** Input-validation and transport guards: each one closes a way for a fallible caller to do harm. */
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -342,6 +343,24 @@ describe("sevdesk_call body and preventSendBy edge cases", () => {
     }
     expect(sent.map((s) => s.query?.preventSendBy)).toEqual([true, true, true, true]);
     expect(sent.every((s) => s.mutating === false)).toBe(true);
+  });
+
+  it("refuses a limit outside 1..1000 before sending (sevDesk answers 400, 2025-03-11 change)", async () => {
+    const { ctx: c, sent } = ctx();
+    for (const limit of [0, -1, 1001, 10000, 1.5, "abc", "1e3", ""]) {
+      await expect(
+        call.handler({ operationId: "getInvoices", params: { limit } }, c),
+      ).rejects.toThrow(/limit must be an integer from 1 to 1000/);
+    }
+    expect(sent).toHaveLength(0);
+    for (const limit of [1, 1000, "50"]) {
+      await call.handler({ operationId: "getInvoices", params: { limit } }, c);
+    }
+    expect(sent).toHaveLength(3);
+  });
+
+  it("the bundled spec no longer documents thumbs for render responses (2026-04-07 change)", () => {
+    expect(readFileSync(new URL("../openapi/sevdesk-openapi.yaml", import.meta.url), "utf8")).not.toMatch(/^\s+thumbs:/m);
   });
 
   it("passes mutating=true to the client for state-changing GETs", async () => {

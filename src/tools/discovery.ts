@@ -141,7 +141,7 @@ const callOperation: ToolDef = {
     if (op.mutating && ctx.config.readOnly) throw new ReadOnlyError(op.operationId);
     if (BOOKING_OPERATIONS.has(op.operationId) && ctx.config.allowBooking !== true) {
       throw new Error(
-        `Refused: ${op.operationId} books or removes payments in sevDesk. Booking is off unless the ` +
+        `Refused: ${op.operationId} books or removes payments in sevDesk (or books transactions automatically). Booking is off unless the ` +
           "server runs with SEVDESK_ALLOW_BOOKING=true.",
       );
     }
@@ -177,6 +177,20 @@ const callOperation: ToolDef = {
     const query: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
       if (!pathParamNames.has(k)) query[k] = v;
+    }
+
+    // sevDesk answers HTTP 400 to a `limit` that is not an integer from 1 to
+    // 1000 (tech.sevdesk.com, 2025-03-11 "API pagination limits"). Refuse it
+    // here with the same rule instead of spending a request on the error.
+    if (query.limit !== undefined && query.limit !== null) {
+      const raw = query.limit;
+      const n = typeof raw === "number" ? raw : /^\d+$/.test(String(raw)) ? Number(raw) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 1000) {
+        throw new Error(
+          `Refused: limit must be an integer from 1 to 1000 (sevDesk rejects anything else with HTTP 400). ` +
+            "Page through larger collections with limit and offset.",
+        );
+      }
     }
 
     // Some GETs change state, and the catalog calls every GET a read. Without

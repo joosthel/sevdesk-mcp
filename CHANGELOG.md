@@ -6,7 +6,8 @@
 
 - `sevdesk_call` refuses the booking operations (`bookVoucher`,
   `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
-  `invoiceResetToOpen`, `creditNoteResetToOpen`) unless
+  `invoiceResetToOpen`, `creditNoteResetToOpen`, and
+  `createPrivateTransactionRule`, which marks future transactions private) unless
   `SEVDESK_ALLOW_BOOKING=true`, dry runs included. If you book invoice
   payments through `sevdesk_call`, set the flag.
   `sevdesk_describe_operation` marks these operations.
@@ -56,6 +57,14 @@
   `N` settles the voucher when the amount is its open amount.
 - `sevdesk_reset_voucher_to_open`: a transaction becomes open again only once
   every voucher on it is reset.
+- The bundled OpenAPI spec is sevDesk's current one. `render`,
+  `changeParameter` and `sendByWithRender` now document the full PDF
+  (Base64 `pdf`) instead of `thumbs`/`pages` (sevDesk change of 2026-04-07),
+  and the PrivateTransactionRule operations are in the catalog.
+- `sevdesk_call` refuses a `limit` that is not an integer from 1 to 1000;
+  sevDesk answers such requests with HTTP 400 since 2025-05-30.
+- `exportDatevDepricated` (`/Export/datevCSV`) is flagged as removed by
+  sevDesk (2025-05-30); use `exportDatevCSV`.
 - `sevdesk_create_voucher` returns a compact summary of the saved voucher
   instead of sevDesk's full echo.
 

@@ -180,6 +180,7 @@ describe("buildServer handlers", () => {
       ["voucherResetToOpen", { voucherId: 1 }],
       ["invoiceResetToOpen", { invoiceId: 1 }],
       ["creditNoteResetToOpen", { creditNoteId: 1 }],
+      ["createPrivateTransactionRule", {}],
     ];
     for (const [operationId, params] of cases) {
       for (const dryRun of [false, true]) {
