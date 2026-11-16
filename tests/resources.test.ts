@@ -502,7 +502,7 @@ describe("sevdesk_create_voucher", () => {
 
   it("refuses status 100/1000, payDate and paidAmount without SEVDESK_ALLOW_BOOKING, dry runs included", async () => {
     const ctx = ctxWith(() => ({ status: 200, data: {} }));
-    for (const extra of [{ status: "100" }, { status: 1000 }, { payDate: "01.09.2026" }, { extra: { paidAmount: 5 } }]) {
+    for (const extra of [{ status: "100" }, { status: 1000 }, { payDate: "01.09.2026" }, { extra: { paidAmount: 5 } }, { extra: { payDate: "2026-09-01" } }]) {
       await expect(createVoucher.handler({ ...args, ...extra }, ctx)).rejects.toThrow(/SEVDESK_ALLOW_BOOKING/);
     }
     await expect(createVoucher.handler({ ...args, status: "50" }, ctx)).resolves.toBeDefined();

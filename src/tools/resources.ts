@@ -646,7 +646,7 @@ const createVoucher: ToolDef = {
     // Open and paid vouchers are bookable; creating one that way books it.
     if (
       ctx.config.allowBooking !== true &&
-      (status !== "50" || optString(args, "payDate") !== undefined || (isPlainObject(args.extra) && "paidAmount" in args.extra))
+      (status !== "50" || optString(args, "payDate") !== undefined || (isPlainObject(args.extra) && ("paidAmount" in args.extra || "payDate" in args.extra)))
     ) {
       throw new Error(
         "Refused: status 100 (offen), status 1000 (bezahlt), payDate and paidAmount open or settle a " +

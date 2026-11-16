@@ -12,8 +12,11 @@
   `creditNoteResetToDraft` and `createPrivateTransactionRule`, and the
   generic writes that book: `updateCheckAccountTransaction` with a `status`,
   `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`,
-  `voucherFactorySaveVoucher` with the same on `voucher`.
-  `sevdesk_describe_operation` says so.
+  `voucherFactorySaveVoucher` with the same on `voucher`, `createTransaction`
+  with a status other than 100, and any write whose body or query carries
+  `paidAmount`, `payDate`, a transfer link or a status of 1000 or more
+  (e.g. an invoice or credit note saved as paid). Array and string bodies on
+  writes are refused. `sevdesk_describe_operation` says so.
 - `sevdesk_call` refuses the booking operations (`bookVoucher`,
   `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
   `invoiceResetToOpen`, `creditNoteResetToOpen`, and

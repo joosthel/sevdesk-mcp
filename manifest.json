@@ -39,7 +39,7 @@
     "allow_booking": {
       "type": "boolean",
       "title": "Allow booking payments",
-      "description": "Lets Claude book payments on vouchers, invoices and credit notes and remove them again. Has no effect in read-only mode.",
+      "description": "Lets Claude book and remove payments, finalize or delete vouchers, create them as open or paid, and mark bank transactions private. Has no effect in read-only mode.",
       "default": false
     }
   },

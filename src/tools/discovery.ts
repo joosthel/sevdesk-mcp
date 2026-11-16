@@ -1,5 +1,6 @@
 import {
   BODY_DEPENDENT_BOOKING_OPERATIONS,
+  bookingField,
   bookingReason,
   briefOperation,
   catalog,
@@ -143,16 +144,19 @@ const callOperation: ToolDef = {
 
     if (op.mutating && ctx.config.readOnly) throw new ReadOnlyError(op.operationId);
     // The booking rules inspect the body as an object; a string would slip past them.
-    if (op.mutating && body !== undefined && body !== null && typeof body !== "object") {
+    if (op.mutating && body !== undefined && body !== null && (typeof body !== "object" || Array.isArray(body))) {
       throw new Error(`Refused: the body of ${op.operationId} must be a JSON object.`);
     }
     let reason = ctx.config.allowBooking === true ? null : bookingReason(op, body);
     // Non-path params go to the query string, and sevDesk reads fields from it
     // on writes too, so `status` there would bypass the body rules.
-    if (!reason && ctx.config.allowBooking !== true && BODY_DEPENDENT_BOOKING_OPERATIONS.has(op.operationId)) {
+    if (!reason && ctx.config.allowBooking !== true && op.mutating) {
       const pathNames = new Set(op.params.filter((p) => p.in === "path").map((p) => p.name));
       const extra = Object.keys(params).filter((k) => !pathNames.has(k));
-      if (extra.length) {
+      const field = bookingField(Object.fromEntries(extra.map((k) => [k, params[k]])));
+      if (field) {
+        reason = `sets ${field} in the query string, which records a payment or marks a document paid`;
+      } else if (extra.length && BODY_DEPENDENT_BOOKING_OPERATIONS.has(op.operationId)) {
         reason = `takes its fields in the body; query parameters (${extra.join(", ")}) could set a booking status`;
       }
     }

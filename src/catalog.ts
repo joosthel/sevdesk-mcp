@@ -82,12 +82,15 @@ export const BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
 ]);
 
 const present = (v: unknown) => v !== undefined && v !== null && v !== "";
+/** paidAmount 0 records no payment. */
+const pays = (v: unknown) => present(v) && Number(v) !== 0;
 const isDraft = (v: unknown) => !present(v) || String(v).trim() === "50";
 const asObject = (v: unknown): Record<string, unknown> =>
   typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
 
 /** Generic writes that also book, depending on what the body sets. */
 export const BODY_DEPENDENT_BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
+  "createTransaction",
   "updateCheckAccountTransaction",
   "updateVoucher",
   "voucherFactorySaveVoucher",
@@ -100,21 +103,48 @@ export const BODY_DEPENDENT_BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
  * sets a transaction status (private), moves a voucher out of draft, or
  * carries paidAmount / payDate (marks it paid).
  */
+/** Fields that record a payment or link a transfer, on any document. */
+const PAYMENT_FIELDS = new Set(["paidamount", "paydate", "sourcetransaction", "targettransaction"]);
+
+/**
+ * The first field anywhere in a write body (or query) that books: a payment
+ * field, or a status of 1000+ (paid / settled on vouchers, invoices, credit
+ * notes). Catches the generic writes BODY_DEPENDENT_BOOKING_OPERATIONS does
+ * not list, e.g. createInvoiceByFactory or updatecreditNote with status 1000.
+ */
+export function bookingField(v: unknown, depth = 0): string | null {
+  if (depth > 8 || typeof v !== "object" || v === null) return null;
+  for (const [k, val] of Object.entries(v)) {
+    const key = k.toLowerCase();
+    if (PAYMENT_FIELDS.has(key) && (key === "paidamount" ? pays(val) : present(val))) return k;
+    if (key === "status" && present(val) && Number(val) >= 1000) return `${k} ${String(val)}`;
+    const deeper = bookingField(val, depth + 1);
+    if (deeper) return deeper;
+  }
+  return null;
+}
+
 export function bookingReason(op: { operationId: string }, body?: unknown): string | null {
   if (BOOKING_OPERATIONS.has(op.operationId)) {
     return "books or removes payments, or books transactions automatically";
   }
+  const field = bookingField(body);
+  if (field) return `sets ${field}, which records a payment or marks a document paid`;
   const b = asObject(body);
   switch (op.operationId) {
+    case "createTransaction":
+      return present(b.status) && String(b.status).trim() !== "100"
+        ? "creates a transaction that is already linked, private or booked (status other than 100)"
+        : null;
     case "updateCheckAccountTransaction":
       return present(b.status) ? "sets a transaction status (for example private), which books it" : null;
     case "updateVoucher":
-      return !isDraft(b.status) || present(b.paidAmount) || present(b.payDate)
+      return !isDraft(b.status) || pays(b.paidAmount) || present(b.payDate)
         ? "sets a voucher open or paid (status, paidAmount or payDate in the body)"
         : null;
     case "voucherFactorySaveVoucher": {
       const v = asObject(b.voucher);
-      return !isDraft(v.status) || present(v.paidAmount) || present(v.payDate)
+      return !isDraft(v.status) || pays(v.paidAmount) || present(v.payDate)
         ? "saves a voucher as open or paid (voucher.status, paidAmount or payDate in the body)"
         : null;
     }
@@ -138,6 +168,8 @@ export function describeOperation(op: Operation): string {
       "booking: only when the body " +
         (op.operationId === "updateCheckAccountTransaction"
           ? "sets status (for example private)"
+          : op.operationId === "createTransaction"
+          ? "sets status other than 100"
           : "sets status other than 50, paidAmount or payDate" +
             (op.operationId === "voucherFactorySaveVoucher" ? " on voucher" : "")) +
         "; those calls need SEVDESK_ALLOW_BOOKING=true",

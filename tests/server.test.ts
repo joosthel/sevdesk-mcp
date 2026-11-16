@@ -238,6 +238,14 @@ describe("buildServer handlers", () => {
       // The same fields sent as query parameters instead of the body.
       ["updateVoucher", { voucherId: 1, status: 1000 }, {}],
       ["updateCheckAccountTransaction", { checkAccountTransactionId: 1, status: 300 }, {}],
+      // Generic rule: payment fields or a paid status on any document, anywhere in the body.
+      ["createTransaction", {}, { status: 300, amount: -1 }],
+      ["createTransaction", {}, { status: "400", amount: -1 }],
+      ["updatecreditNote", { creditNoteId: 1 }, { status: "1000" }],
+      ["updatecreditNote", { creditNoteId: 1, status: 1000 }, {}],
+      ["createInvoiceByFactory", {}, { invoice: { status: "1000", payDate: "2026-01-01" } }],
+      ["createcreditNote", {}, { creditNote: { status: 100 }, creditNotePosSave: [{ paidAmount: 5 }] }],
+      ["updateCheckAccountTransaction", { checkAccountTransactionId: 1 }, { targetTransaction: { id: 2, objectName: "CheckAccountTransaction" } }],
     ];
 
     it("refuses them without the flag, dry runs included, and allows them with it", async () => {
@@ -267,6 +275,13 @@ describe("buildServer handlers", () => {
         dryRun: true,
       });
       expect(r.isError).toBe(true);
+      const arr = await s.call("sevdesk_call", {
+        operationId: "updateCheckAccountTransaction",
+        params: { checkAccountTransactionId: 1 },
+        body: [{ status: 300 }],
+        dryRun: true,
+      });
+      expect(arr.isError).toBe(true);
       await s.close();
     });
 
@@ -278,6 +293,10 @@ describe("buildServer handlers", () => {
         ["updateCheckAccountTransaction", { checkAccountTransactionId: 1 }, { paymtPurpose: "x" }],
         ["voucherFactorySaveVoucher", {}, { voucher: { status: "50", description: "x" } }],
         ["voucherFactorySaveVoucher", {}, { voucher: { description: "x" } }],
+        ["voucherFactorySaveVoucher", {}, { voucher: { status: 50, paidAmount: 0 } }],
+        ["createTransaction", {}, { status: 100, amount: -1 }],
+        ["createInvoiceByFactory", {}, { invoice: { status: 100 } }],
+        ["updatecreditNote", { creditNoteId: 1 }, { header: "x" }],
       ] as Array<[string, Row, Row]>) {
         const r = await s.call("sevdesk_call", { operationId, params, body, dryRun: true });
         expect(r.isError, `${operationId} ${JSON.stringify(body)}`).toBeFalsy();

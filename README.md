@@ -4,7 +4,7 @@
 
 **The complete MCP server for [sevDesk](https://sevdesk.de): every API endpoint, guarded writes, and a built-in bookkeeping audit layer.**
 
-Connect Claude (or any MCP client) to your sevDesk account: list and create vouchers and invoices, reconcile bank transactions, reach all 151 API operations — and run audits that know what a *wrong* booking looks like: a foreign supplier booked as domestic 0 % instead of Reverse Charge §13b, a tax rule the booking account doesn't allow, a payment with no receipt behind it.
+Connect Claude (or any MCP client) to your sevDesk account: list and create vouchers and invoices, reconcile bank transactions, reach all 154 API operations — and run audits that know what a *wrong* booking looks like: a foreign supplier booked as domestic 0 % instead of Reverse Charge §13b, a tax rule the booking account doesn't allow, a payment with no receipt behind it.
 
 > **Status: v0.5.0.** Live-validated against a real sevDesk account (bookkeeping system 2.0) — where the audit found exactly the class of mis-booking it was built for. See [CHANGELOG.md](CHANGELOG.md).
 
@@ -77,7 +77,7 @@ Once you trust the setup, set `SEVDESK_READ_ONLY` to `"false"` and restart the c
 
 ## Tools
 
-**26 tools cover all 151 API operations.**
+**30 tools cover all 154 API operations** (26 without `SEVDESK_ALLOW_BOOKING`).
 
 ### Audit
 
@@ -114,7 +114,7 @@ All four refuse enshrined objects, accept `dryRun`, and read the object back to 
 
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
 
-Rather than registering 151 tools and swamping the client's tool list, the server ships a searchable catalogue generated from sevDesk's OpenAPI document. Search for what you need, read its signature, call it. Every endpoint is reachable.
+Rather than registering 154 tools and swamping the client's tool list, the server ships a searchable catalogue generated from sevDesk's OpenAPI document. Search for what you need, read its signature, call it. Every endpoint is reachable.
 
 ## Common workflows
 
@@ -177,7 +177,7 @@ Read-only mode is enforced three times: write tools are hidden from the tool lis
 
 - Every write tool accepts a per-call `dryRun` and honors the global `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` and `sevdesk_create_invoice` default to **drafts** — nothing is booked or sent silently.
-- Booking payments is a separate opt-in: without `SEVDESK_ALLOW_BOOKING=true` the booking tools are hidden and refused, and `sevdesk_call` refuses the ten booking operations (`bookVoucher`, `bookInvoice`, `bookCreditNote`, their `*ResetToOpen` and `*ResetToDraft`, `createPrivateTransactionRule`) and writes whose body books: `updateCheckAccountTransaction` with a `status`, `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`, and `voucherFactorySaveVoucher` with the same on `voucher`, dry runs included. `sevdesk_create_voucher` refuses status 100/1000, `payDate` and `paidAmount`, and `sevdesk_update_draft_voucher` refuses `finalize`. `sevdesk_link_transaction` only takes open bank transactions and checks every voucher and the total before the first booking. `sevdesk_reset_voucher_to_open` is marked destructive. Both refuse foreign-currency vouchers. `sevdesk_delete_voucher` and `sevdesk_set_transaction_private` are booking tools as well.
+- Booking payments is a separate opt-in: without `SEVDESK_ALLOW_BOOKING=true` the booking tools are hidden and refused, and `sevdesk_call` refuses the ten booking operations (`bookVoucher`, `bookInvoice`, `bookCreditNote`, their `*ResetToOpen` and `*ResetToDraft`, `createPrivateTransactionRule`) and writes whose body books: `updateCheckAccountTransaction` with a `status`, `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`, `voucherFactorySaveVoucher` with the same on `voucher`, `createTransaction` with a status other than 100, and any write that carries `paidAmount`, `payDate`, a transfer link or a status of 1000 or more anywhere in the body or query, dry runs included. `sevdesk_create_voucher` refuses status 100/1000, `payDate` and `paidAmount`, and `sevdesk_update_draft_voucher` refuses `finalize`. `sevdesk_link_transaction` only takes open bank transactions and checks every voucher and the total before the first booking. `sevdesk_reset_voucher_to_open` is marked destructive. Both refuse foreign-currency vouchers. `sevdesk_delete_voucher` and `sevdesk_set_transaction_private` are booking tools as well.
 - `sevdesk_set_tax_rule` and `sevdesk_mark_invoice_sent` refuse enshrined documents and verify their changes by reading the document back.
 - The ledger-cleanup tools check the object's status before every write (only drafts are deleted or corrected, only open transactions are marked private) and refuse enshrined ones. `sevdesk_delete_voucher` is the only tool that cannot be undone; it carries the MCP `destructiveHint`.
 - There is deliberately **no email-send tool**, and `sevdesk_get_invoice_pdf` never overwrites an existing file.

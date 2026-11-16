@@ -4,7 +4,7 @@
 
 **Der vollständige MCP-Server für [sevDesk](https://sevdesk.de): jeder API-Endpunkt, abgesicherte Schreibzugriffe und eine eingebaute Buchhaltungsprüfung.**
 
-Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege und Rechnungen auflisten und anlegen, Banktransaktionen abgleichen, alle 151 API-Operationen erreichen — und Prüfungen laufen lassen, die wissen, wie eine *falsche* Buchung aussieht: ein ausländischer Lieferant als inländische 0 % statt Reverse Charge §13b, eine Steuerregel, die das Buchungskonto nicht erlaubt, eine Zahlung ohne Beleg dahinter.
+Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege und Rechnungen auflisten und anlegen, Banktransaktionen abgleichen, alle 154 API-Operationen erreichen — und Prüfungen laufen lassen, die wissen, wie eine *falsche* Buchung aussieht: ein ausländischer Lieferant als inländische 0 % statt Reverse Charge §13b, eine Steuerregel, die das Buchungskonto nicht erlaubt, eine Zahlung ohne Beleg dahinter.
 
 > **Status: v0.5.0.** Gegen ein echtes sevDesk-Konto validiert (Buchhaltungssystem 2.0) — wo die Prüfung genau die Klasse von Fehlbuchungen fand, für die sie gebaut wurde. Siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -77,7 +77,7 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 ## Tools
 
-**26 Tools decken alle 151 API-Operationen ab.**
+**30 Tools decken alle 154 API-Operationen ab** (26 ohne `SEVDESK_ALLOW_BOOKING`).
 
 ### Prüfung
 
@@ -114,7 +114,7 @@ Alle vier verweigern festgeschriebene Objekte, akzeptieren `dryRun` und lesen da
 
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
 
-Statt 151 Tools zu registrieren und die Tool-Liste des Clients zu fluten, liefert der Server einen durchsuchbaren Katalog, der aus sevDesks OpenAPI-Dokument generiert wird. Suchen, Signatur lesen, aufrufen — jeder Endpunkt ist erreichbar.
+Statt 154 Tools zu registrieren und die Tool-Liste des Clients zu fluten, liefert der Server einen durchsuchbaren Katalog, der aus sevDesks OpenAPI-Dokument generiert wird. Suchen, Signatur lesen, aufrufen — jeder Endpunkt ist erreichbar.
 
 ## Typische Arbeitsabläufe
 
@@ -176,7 +176,7 @@ Der Nur-Lesen-Modus greift dreifach: Schreib-Tools verschwinden aus der Tool-Lis
 
 - Jedes Schreib-Tool akzeptiert ein `dryRun` pro Aufruf und beachtet das globale `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` und `sevdesk_create_invoice` erstellen **Entwürfe** — nichts wird stillschweigend gebucht oder versendet.
-- Zahlungen buchen ist ein eigenes Opt-in: Ohne `SEVDESK_ALLOW_BOOKING=true` sind die Buchungs-Tools ausgeblendet und werden verweigert, und `sevdesk_call` verweigert die zehn Buchungs-Operationen (`bookVoucher`, `bookInvoice`, `bookCreditNote`, ihre `*ResetToOpen` und `*ResetToDraft`, `createPrivateTransactionRule`) und Schreibzugriffe, deren Body bucht: `updateCheckAccountTransaction` mit `status`, `updateVoucher` mit einem `status` außer 50, `paidAmount` oder `payDate` und `voucherFactorySaveVoucher` mit demselben in `voucher`, auch als Dry Run. `sevdesk_create_voucher` verweigert Status 100/1000, `payDate` und `paidAmount`, und `sevdesk_update_draft_voucher` verweigert `finalize`. `sevdesk_link_transaction` nimmt nur offene Bankumsätze und prüft jeden Beleg und die Summe vor der ersten Buchung. `sevdesk_reset_voucher_to_open` ist als destruktiv markiert. Beide verweigern Fremdwährungsbelege. `sevdesk_delete_voucher` und `sevdesk_set_transaction_private` sind ebenfalls Buchungs-Tools.
+- Zahlungen buchen ist ein eigenes Opt-in: Ohne `SEVDESK_ALLOW_BOOKING=true` sind die Buchungs-Tools ausgeblendet und werden verweigert, und `sevdesk_call` verweigert die zehn Buchungs-Operationen (`bookVoucher`, `bookInvoice`, `bookCreditNote`, ihre `*ResetToOpen` und `*ResetToDraft`, `createPrivateTransactionRule`) und Schreibzugriffe, deren Body bucht: `updateCheckAccountTransaction` mit `status`, `updateVoucher` mit einem `status` außer 50, `paidAmount` oder `payDate` `voucherFactorySaveVoucher` mit demselben in `voucher`, `createTransaction` mit einem Status außer 100 sowie jeder Schreibzugriff, der irgendwo in Body oder Query `paidAmount`, `payDate`, eine Umbuchungs-Verknüpfung oder einen Status ab 1000 enthält, auch als Dry Run. `sevdesk_create_voucher` verweigert Status 100/1000, `payDate` und `paidAmount`, und `sevdesk_update_draft_voucher` verweigert `finalize`. `sevdesk_link_transaction` nimmt nur offene Bankumsätze und prüft jeden Beleg und die Summe vor der ersten Buchung. `sevdesk_reset_voucher_to_open` ist als destruktiv markiert. Beide verweigern Fremdwährungsbelege. `sevdesk_delete_voucher` und `sevdesk_set_transaction_private` sind ebenfalls Buchungs-Tools.
 - `sevdesk_set_tax_rule` und `sevdesk_mark_invoice_sent` verweigern festgeschriebene Dokumente und verifizieren ihre Änderung durch erneutes Lesen.
 - Die Aufräum-Tools prüfen vor jedem Schreiben den Status (nur Entwürfe werden gelöscht oder korrigiert, nur offene Transaktionen privat gesetzt) und verweigern festgeschriebene Objekte. `sevdesk_delete_voucher` ist das einzige Tool, das sich nicht rückgängig machen lässt; es trägt den MCP-`destructiveHint`.
 - Es gibt bewusst **kein E-Mail-Versand-Tool**, und `sevdesk_get_invoice_pdf` überschreibt niemals eine bestehende Datei.
