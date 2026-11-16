@@ -81,17 +81,24 @@ describe("buildServer handlers", () => {
   });
 
   it("lists booking tools only with SEVDESK_ALLOW_BOOKING and writes enabled", async () => {
-    const booking = ["sevdesk_link_transaction", "sevdesk_reset_voucher_to_open"];
+    const booking = [
+      "sevdesk_link_transaction",
+      "sevdesk_reset_voucher_to_open",
+      "sevdesk_delete_voucher",
+      "sevdesk_set_transaction_private",
+    ];
     const off = await connect();
     const offNames = (await off.list()).map((t) => t.name);
     expect(offNames.filter((n) => booking.includes(n))).toEqual([]);
     expect(offNames).toContain("sevdesk_create_voucher");
+    expect(offNames).toContain("sevdesk_update_draft_voucher");
     await off.close();
 
     const on = await connect({ allowBooking: true });
     const onTools = await on.list();
     expect(onTools.map((t) => t.name)).toEqual(expect.arrayContaining(booking));
     expect(onTools.find((t) => t.name === "sevdesk_reset_voucher_to_open")!.annotations.destructiveHint).toBe(true);
+    expect(onTools.find((t) => t.name === "sevdesk_delete_voucher")!.annotations.destructiveHint).toBe(true);
     await on.close();
 
     const ro = await connect({ readOnly: true, allowBooking: true });
@@ -105,6 +112,21 @@ describe("buildServer handlers", () => {
     const r = await s.call("sevdesk_reset_voucher_to_open", { voucherId: "1" });
     expect(r.isError).toBe(true);
     expect(r.content[0]!.text).toMatch(/SEVDESK_READ_ONLY/);
+    expect(fetchCalls).toHaveLength(0);
+    await s.close();
+  });
+
+  it("refuses delete and mark-private at call time without SEVDESK_ALLOW_BOOKING, before any HTTP", async () => {
+    const fetchCalls: string[] = [];
+    const s = await connect({ fetchCalls });
+    for (const [name, args] of [
+      ["sevdesk_delete_voucher", { voucherId: "1" }],
+      ["sevdesk_set_transaction_private", { transactionId: "1" }],
+    ] as const) {
+      const r = await s.call(name, args);
+      expect(r.isError).toBe(true);
+      expect(r.content[0]!.text).toMatch(/SEVDESK_ALLOW_BOOKING/);
+    }
     expect(fetchCalls).toHaveLength(0);
     await s.close();
   });

@@ -147,8 +147,10 @@ describe("annotations and output cap", () => {
 
   it("marks exactly the payment tools as booking tools", () => {
     expect(tools.filter((t) => t.booking).map((t) => t.name).sort()).toEqual([
+      "sevdesk_delete_voucher",
       "sevdesk_link_transaction",
       "sevdesk_reset_voucher_to_open",
+      "sevdesk_set_transaction_private",
     ]);
     expect(tools.filter((t) => t.booking).every((t) => t.mutating)).toBe(true);
   });

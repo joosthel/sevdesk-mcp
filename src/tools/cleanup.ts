@@ -10,35 +10,40 @@ import {
   round2,
   ymd,
 } from "../lib/vat.js";
-import { bool, isDryRun, str, type ToolContext, type ToolDef } from "../lib/tool.js";
+import {
+  bool,
+  getAllCapped,
+  isDryRun,
+  optId,
+  optRuleId,
+  optString,
+  positionObjects,
+  requireId,
+  str,
+  strictBool,
+  type ToolContext,
+  type ToolDef,
+} from "../lib/tool.js";
+import {
+  TRANSACTION_STATUS,
+  assertRuleFitsVoucher,
+  fetchTransaction,
+  fetchUnenshrined,
+  type Row,
+} from "./resources.js";
 
 /*
  * Narrow write tools for cleaning up a ledger: delete a duplicate draft, mark a
- * private payment, correct a draft, attach a receipt sent inline, book a
- * voucher against its bank transaction. Each one checks the object's state
- * first, refuses enshrined (festgeschrieben) objects, accepts dryRun, and reads
- * the object back afterwards to verify the change — the alternative for these
- * jobs is the unguarded sevdesk_call.
+ * private payment, correct a draft, attach a receipt sent inline. Each one
+ * checks the object's state first, refuses enshrined (festgeschrieben) objects,
+ * accepts dryRun, and reads the object back afterwards to verify the change —
+ * the alternative for these jobs is the unguarded sevdesk_call. Booking a
+ * voucher against a bank transaction is sevdesk_link_transaction.
  */
 
-type Row = Record<string, unknown>;
-
-/** CheckAccountTransaction.status, per the spec's Model_CheckAccountTransaction. */
-const TX_STATUS: Record<string, string> = {
-  "100": "open (not linked)",
-  "200": "linked",
-  "300": "private",
-  "350": "auto-booked",
-  "400": "booked",
-};
 const MAX_UPLOAD_BYTES = 10 * 1024 * 1024;
-const CENT = 0.005;
-
-function numericId(args: Row, key: string): string {
-  const v = String(args[key] ?? "").trim();
-  if (!/^\d+$/.test(v)) throw new Error(`${key} must be a numeric id.`);
-  return v;
-}
+/** Positions read back for a rewrite; more than this is refused rather than half-rewritten. */
+const MAX_POSITIONS = 500;
 
 /** yyyy-mm-dd from yyyy-mm-dd or dd.mm.yyyy; throws on anything else. */
 function isoDate(value: unknown, key: string): string {
@@ -74,18 +79,21 @@ async function getOne(ctx: ToolContext, path: string, query?: Record<string, unk
   }
 }
 
+/** Null when the voucher does not exist (the delete's read-back relies on it). */
 const getVoucher = (ctx: ToolContext, id: string) =>
   getOne(ctx, `/Voucher/${id}`, { embed: "supplier" });
-const getTransaction = (ctx: ToolContext, id: string) =>
-  getOne(ctx, `/CheckAccountTransaction/${id}`);
 
 async function getPositions(ctx: ToolContext, voucherId: string): Promise<Row[]> {
-  const { data } = await ctx.client.request<{ objects?: Row[] }>({
-    method: "GET",
-    path: "/VoucherPos",
-    query: { "voucher[id]": voucherId, "voucher[objectName]": "Voucher", limit: 200 },
-  });
-  return data?.objects ?? [];
+  const { rows, truncated } = await getAllCapped(
+    ctx,
+    "/VoucherPos",
+    { "voucher[id]": voucherId, "voucher[objectName]": "Voucher" },
+    MAX_POSITIONS,
+  );
+  if (truncated) {
+    throw new Error(`Voucher ${voucherId} has more than ${MAX_POSITIONS} positions; change it in the sevDesk UI.`);
+  }
+  return rows;
 }
 
 function voucherSummary(v: Row) {
@@ -113,7 +121,7 @@ function transactionSummary(t: Row) {
     purpose: (t.paymtPurpose as string | undefined) ?? null,
     amount: round2(num(t.amount)),
     checkAccountId: sub(t.checkAccount)?.id ? String(sub(t.checkAccount)!.id) : null,
-    status: `${t.status} ${TX_STATUS[String(t.status)] ?? ""}`.trim(),
+    status: `${t.status} ${TRANSACTION_STATUS[String(t.status)] ?? ""}`.trim(),
   };
 }
 
@@ -134,9 +142,10 @@ const deleteVoucher: ToolDef = {
     "Delete one voucher (Beleg) that is still a draft (status 50, Entwurf), e.g. a duplicate. " +
     "Refuses open, paid and enshrined vouchers and drafts with payments. Returns what was " +
     "deleted (date, supplier, amounts, document number) and verifies the voucher is gone. Use " +
-    "dryRun first to see what would be deleted. Cannot be undone.",
+    "dryRun first to see what would be deleted. Cannot be undone. Needs SEVDESK_ALLOW_BOOKING=true.",
   mutating: true,
   destructive: true,
+  booking: true,
   inputSchema: {
     type: "object",
     properties: {
@@ -147,7 +156,7 @@ const deleteVoucher: ToolDef = {
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    const id = numericId(args, "voucherId");
+    const id = requireId(args, "voucherId");
     const v = await getVoucher(ctx, id);
     if (!v) throw new Error(`No voucher with id ${id}.`);
     refuseEnshrined("Voucher", id, v);
@@ -181,8 +190,10 @@ const setTransactionPrivate: ToolDef = {
     "Mark one bank transaction (CheckAccountTransaction) as private (status 300, Privat), e.g. " +
     "a private payment from the business account. Only for transactions that are still open " +
     "(status 100: not linked to a voucher/invoice and not booked); refuses enshrined ones. " +
-    "Verifies the new status. Undo in the sevDesk web app.",
+    "Verifies the new status. Undo in the sevDesk web app. Needs SEVDESK_ALLOW_BOOKING=true, " +
+    "because sevDesk books the transaction as a private withdrawal or deposit.",
   mutating: true,
+  booking: true,
   inputSchema: {
     type: "object",
     properties: {
@@ -193,9 +204,8 @@ const setTransactionPrivate: ToolDef = {
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    const id = numericId(args, "transactionId");
-    const t = await getTransaction(ctx, id);
-    if (!t) throw new Error(`No bank transaction with id ${id}.`);
+    const id = requireId(args, "transactionId");
+    const t = await fetchTransaction(ctx, id);
     refuseEnshrined("Transaction", id, t);
     const transaction = transactionSummary(t);
     if (String(t.status) === "300") return { changed: false, note: "Already private.", transaction };
@@ -209,20 +219,43 @@ const setTransactionPrivate: ToolDef = {
       return { dryRun: true, transaction, wouldSend: { method: "PUT", path: `/CheckAccountTransaction/${id}`, body } };
     }
     await ctx.client.request({ method: "PUT", path: `/CheckAccountTransaction/${id}`, body, mutating: true });
-    const after = await getTransaction(ctx, id);
-    if (String(after?.status) !== "300") {
-      throw new Error(`sevDesk accepted the change, but transaction ${id} now has status ${after?.status}.`);
+    const after = await fetchTransaction(ctx, id);
+    if (String(after.status) !== "300") {
+      throw new Error(`sevDesk accepted the change, but transaction ${id} now has status ${after.status}.`);
     }
-    return { changed: true, verified: true, transaction: transactionSummary(after!) };
+    return { changed: true, verified: true, transaction: transactionSummary(after) };
   },
 };
 
 /* --------------------------- inline upload --------------------------- */
 
+const startsWith = (magic: Buffer) => (bytes: Buffer) => bytes.subarray(0, magic.length).equals(magic);
+
+/**
+ * UTF-8 text that starts with `<`, ends with `>` and has an element in it —
+ * enough to tell an XRechnung / ZUGFeRD XML from a renamed binary. sevDesk
+ * parses the document itself; this is no schema validation.
+ */
+function looksLikeXml(bytes: Buffer): boolean {
+  let text: string;
+  try {
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return false;
+  }
+  text = text.replace(/^\uFEFF/, "").trim();
+  return text.startsWith("<") && text.endsWith(">") && !text.includes("\0") && /<[A-Za-z_][^<>]*>/.test(text);
+}
+
 const FILE_TYPES = [
-  { ext: ["pdf"], mimeType: "application/pdf", magic: Buffer.from("%PDF-") },
-  { ext: ["png"], mimeType: "image/png", magic: Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) },
-  { ext: ["jpg", "jpeg"], mimeType: "image/jpeg", magic: Buffer.from([0xff, 0xd8, 0xff]) },
+  { ext: ["pdf"], mimeType: "application/pdf", detect: startsWith(Buffer.from("%PDF-")) },
+  {
+    ext: ["png"],
+    mimeType: "image/png",
+    detect: startsWith(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])),
+  },
+  { ext: ["jpg", "jpeg"], mimeType: "image/jpeg", detect: startsWith(Buffer.from([0xff, 0xd8, 0xff])) },
+  { ext: ["xml"], mimeType: "application/xml", detect: looksLikeXml },
 ];
 
 const uploadVoucherFileContent: ToolDef = {
@@ -232,14 +265,15 @@ const uploadVoucherFileContent: ToolDef = {
     "Upload a receipt sent inline as base64 (e.g. an e-mail attachment) to sevDesk's temporary " +
     "voucher storage — for hosted clients that cannot use sevdesk_upload_voucher_file's local " +
     "path. Returns fileName, the token sevdesk_create_voucher attaches to a new voucher. PDF, " +
-    "PNG and JPG only (checked by content, not only the name), at most " +
+    "PNG, JPG and XML (XRechnung / ZUGFeRD e-invoice) only, checked by content and not only " +
+    "the name, at most " +
     `${MAX_UPLOAD_BYTES / 1024 / 1024} MB. Accepts standard and URL-safe base64 and data: URLs. ` +
     "Creates no voucher by itself.",
   mutating: true,
   inputSchema: {
     type: "object",
     properties: {
-      fileName: str("Original file name with extension .pdf, .png, .jpg or .jpeg."),
+      fileName: str("Original file name with extension .pdf, .png, .jpg, .jpeg or .xml."),
       base64Content: str("The file content, base64 encoded."),
       dryRun: bool("Check the file without uploading it."),
     },
@@ -252,7 +286,7 @@ const uploadVoucherFileContent: ToolDef = {
       .slice(-120);
     const ext = /\.([a-z]+)$/i.exec(name)?.[1]?.toLowerCase() ?? "";
     const type = FILE_TYPES.find((t) => t.ext.includes(ext));
-    if (!type) throw new Error("fileName must end in .pdf, .png, .jpg or .jpeg.");
+    if (!type) throw new Error("fileName must end in .pdf, .png, .jpg, .jpeg or .xml.");
 
     let b64 = String(args.base64Content ?? "")
       .replace(/^data:[^,]*;base64,/, "")
@@ -271,8 +305,8 @@ const uploadVoucherFileContent: ToolDef = {
     if (bytes.length === 0 || bytes.length > MAX_UPLOAD_BYTES) {
       throw new Error(`The file must be 1 to ${MAX_UPLOAD_BYTES} bytes; it is ${bytes.length}.`);
     }
-    const actual = FILE_TYPES.find((t) => bytes.subarray(0, t.magic.length).equals(t.magic));
-    if (!actual) throw new Error("The content is not a PDF, PNG or JPG file.");
+    const actual = FILE_TYPES.find((t) => t.detect(bytes));
+    if (!actual) throw new Error("The content is not a PDF, PNG, JPG or XML file.");
     if (actual !== type) throw new Error(`The content is ${actual.mimeType}, but the name ends in .${ext}.`);
 
     const file = {
@@ -324,14 +358,6 @@ const positionSchema = {
   additionalProperties: false,
 };
 
-interface PositionIn {
-  sumNet?: unknown;
-  sumGross?: unknown;
-  taxRate?: unknown;
-  comment?: unknown;
-  accountDatevId?: unknown;
-}
-
 const updateDraftVoucher: ToolDef = {
   name: "sevdesk_update_draft_voucher",
   title: "Correct a draft voucher",
@@ -341,9 +367,12 @@ const updateDraftVoucher: ToolDef = {
     "give the full new list; existing positions are reused in order (they keep their booking " +
     "account unless accountDatevId is given), extra old ones are deleted. Example: gross 214.20 " +
     "booked at 0 % -> positions [{sumNet: 180, taxRate: 19}] gives 180.00 + 34.20 VAT = 214.20. " +
-    "finalize=true also sets the voucher to open (100), needed before sevdesk_book_voucher; " +
-    "every position then needs a booking account. Refuses open, paid and enshrined vouchers; " +
-    "keeps the attached file; verifies sums and status afterwards.",
+    "Positions you do not replace are sent back as they were entered, net or gross. A new " +
+    "taxRuleId is checked against the voucher's side (expense or revenue) and its position rates. " +
+    "finalize=true also sets the voucher to open (100), needed before sevdesk_link_transaction; " +
+    "every position then needs a booking account. finalize is refused unless the server runs " +
+    "with SEVDESK_ALLOW_BOOKING=true; without it the draft can still be corrected. Refuses open, " +
+    "paid and enshrined vouchers; keeps the attached file; verifies sums and status afterwards.",
   mutating: true,
   inputSchema: {
     type: "object",
@@ -354,14 +383,25 @@ const updateDraftVoucher: ToolDef = {
       supplierName: str("New supplier name."),
       taxRuleId: str("New tax rule id, e.g. 9 (Vorsteuerabziehbare Aufwendungen)."),
       positions: { type: "array", description: "The complete new list of positions.", items: positionSchema },
-      finalize: bool("Also set the voucher from draft (50) to open (100)."),
+      finalize: bool(
+        "Also set the voucher from draft (50) to open (100). Refused unless the server runs with SEVDESK_ALLOW_BOOKING=true.",
+      ),
       dryRun: bool("Show the request without sending it."),
     },
     required: ["voucherId"],
     additionalProperties: false,
   },
   async handler(args, ctx) {
-    const id = numericId(args, "voucherId");
+    const id = requireId(args, "voucherId");
+    const finalize = strictBool(args, "finalize") === true;
+    // Open vouchers can be booked, so the step out of draft is gated like the booking tools.
+    if (finalize && ctx.config.allowBooking !== true) {
+      throw new Error(
+        "Refused: finalize=true sets the voucher open (100), which makes it bookable. That is off " +
+          "unless the server runs with SEVDESK_ALLOW_BOOKING=true. Leave finalize out to correct the draft, " +
+          "or set the voucher open in the sevDesk UI.",
+      );
+    }
     const v = await getVoucher(ctx, id);
     if (!v) throw new Error(`No voucher with id ${id}.`);
     refuseEnshrined("Voucher", id, v);
@@ -370,23 +410,39 @@ const updateDraftVoucher: ToolDef = {
     }
     const before = voucherSummary(v);
     const oldPositions = await getPositions(ctx, id);
-    const finalize = args.finalize === true;
 
-    const taxRuleId = args.taxRuleId ? String(args.taxRuleId).trim() : String(sub(v.taxRule)?.id ?? "");
+    const newRuleId = optRuleId(args);
+    const taxRuleId = newRuleId ?? String(sub(v.taxRule)?.id ?? "");
+    const positionsGiven = args.positions !== undefined;
+    if (positionsGiven && !Array.isArray(args.positions)) throw new Error("positions must be an array.");
+    const list = positionsGiven ? positionObjects(args) : [];
+    if (positionsGiven && !list.length) throw new Error("positions must contain at least one position.");
+    list.forEach((p, i) => {
+      if (typeof p.taxRate !== "number" || !(p.taxRate >= 0)) {
+        throw new Error(`Position ${i + 1}: taxRate must be a number.`);
+      }
+    });
+
+    // The rule must fit the voucher's side and the rates that end up on it:
+    // the new positions' rates, else the existing ones. An unchanged rule is
+    // only re-checked when positions are replaced.
     const rule = taxRuleId in TAX_RULES ? TAX_RULES[taxRuleId as TaxRuleId] : undefined;
-    if (args.taxRuleId && (!rule || !rule.usableInVouchers)) {
-      throw new Error(`taxRule ${taxRuleId} cannot be used on vouchers.`);
+    if (newRuleId || (positionsGiven && rule?.usableInVouchers)) {
+      const rates = positionsGiven ? list.map((p) => p.taxRate as number) : oldPositions.map((p) => num(p.taxRate));
+      assertRuleFitsVoucher(taxRuleId, v, id, rates);
     }
 
     const supplier = sub(v.supplier);
+    const supplierName = optString(args, "supplierName");
+    const description = optString(args, "description");
     const voucher: Row = {
       id: Number(id),
       objectName: "Voucher",
       mapAll: true,
       voucherDate: args.voucherDate ? isoDate(args.voucherDate, "voucherDate") : date(v.voucherDate),
       ...(supplier?.id ? { supplier: { id: Number(supplier.id), objectName: "Contact" } } : {}),
-      supplierName: args.supplierName ? String(args.supplierName).trim() : v.supplierName,
-      description: args.description ? String(args.description).trim() : v.description,
+      supplierName: supplierName ?? v.supplierName,
+      description: description ?? v.description,
       status: finalize ? 100 : 50,
       taxRule: { id: taxRuleId, objectName: "TaxRule" },
       creditDebit: v.creditDebit,
@@ -398,28 +454,23 @@ const updateDraftVoucher: ToolDef = {
     let voucherPosSave: Row[];
     let voucherPosDelete: Row[] | null = null;
     let expected: { net: number; gross: number };
-    if (args.positions !== undefined) {
-      const list = (Array.isArray(args.positions) ? args.positions : []) as PositionIn[];
-      if (!list.length) throw new Error("positions must contain at least one position.");
+    if (positionsGiven) {
       const net = typeof list[0]!.sumNet === "number";
       let sumNet = 0;
       let sumGross = 0;
       voucherPosSave = list.map((p, i) => {
         const n = `Position ${i + 1}`;
-        if (typeof p.taxRate !== "number" || p.taxRate < 0) throw new Error(`${n}: taxRate must be a number.`);
-        const allowed: readonly number[] | null | undefined = rule?.allowedRates;
-        if (allowed && !allowed.includes(p.taxRate)) {
-          throw new Error(`${n}: tax rule ${taxRuleId} allows only ${allowed.join(", ")} %.`);
-        }
+        const taxRate = p.taxRate as number;
         const amount = net ? p.sumNet : p.sumGross;
         if (typeof amount !== "number" || (net ? p.sumGross !== undefined : p.sumNet !== undefined)) {
           throw new Error(`${n}: give ${net ? "sumNet" : "sumGross"} (all positions must use the same one).`);
         }
-        sumNet += net ? amount : amount / (1 + p.taxRate / 100);
-        sumGross += net ? amount * (1 + p.taxRate / 100) : amount;
+        sumNet += net ? amount : amount / (1 + taxRate / 100);
+        sumGross += net ? amount * (1 + taxRate / 100) : amount;
         const old = oldPositions[i];
-        const accountDatev = p.accountDatevId
-          ? { id: Number(p.accountDatevId), objectName: "AccountDatev" }
+        const newAccount = optId(p, "accountDatevId");
+        const accountDatev = newAccount
+          ? { id: Number(newAccount), objectName: "AccountDatev" }
           : ref(old?.accountDatev);
         return {
           ...(old ? { id: Number(old.id) } : {}),
@@ -427,33 +478,38 @@ const updateDraftVoucher: ToolDef = {
           mapAll: true,
           ...(accountDatev ? { accountDatev } : {}),
           ...(!accountDatev && old?.accountingType ? { accountingType: ref(old.accountingType) } : {}),
-          taxRate: p.taxRate,
+          taxRate,
           net,
           ...(net ? { sumNet: amount } : { sumGross: amount }),
-          comment: p.comment ?? old?.comment ?? null,
+          comment: typeof p.comment === "string" ? p.comment : (old?.comment ?? null),
         };
       });
       const extra = oldPositions.slice(list.length).map((p) => ({ id: Number(p.id), objectName: "VoucherPos" }));
       voucherPosDelete = extra.length ? extra : null;
       expected = { net: round2(sumNet), gross: round2(sumGross) };
     } else {
-      if (!args.voucherDate && !args.description && !args.supplierName && !args.taxRuleId && !finalize) {
+      if (!args.voucherDate && !description && !supplierName && !newRuleId && !finalize) {
         throw new Error(
           "Nothing to change: give at least one of voucherDate, description, supplierName, taxRuleId, positions, finalize.",
         );
       }
-      // saveVoucher replaces the positions, so send the old ones unchanged.
-      voucherPosSave = oldPositions.map((p) => ({
-        id: Number(p.id),
-        objectName: "VoucherPos",
-        mapAll: true,
-        ...(p.accountDatev ? { accountDatev: ref(p.accountDatev) } : {}),
-        ...(!p.accountDatev && p.accountingType ? { accountingType: ref(p.accountingType) } : {}),
-        taxRate: num(p.taxRate),
-        net: true,
-        sumNet: num(p.sumNet),
-        comment: p.comment ?? null,
-      }));
+      // saveVoucher replaces the positions, so send the old ones back in the
+      // form they were entered (VoucherPos `net`): a gross-entered position
+      // re-sent as net could shift by a cent.
+      voucherPosSave = oldPositions.map((p) => {
+        const isNet = p.net !== false;
+        return {
+          id: Number(p.id),
+          objectName: "VoucherPos",
+          mapAll: true,
+          ...(p.accountDatev ? { accountDatev: ref(p.accountDatev) } : {}),
+          ...(!p.accountDatev && p.accountingType ? { accountingType: ref(p.accountingType) } : {}),
+          taxRate: num(p.taxRate),
+          net: isNet,
+          ...(isNet ? { sumNet: num(p.sumNet) } : { sumGross: num(p.sumGross) }),
+          comment: p.comment ?? null,
+        };
+      });
       expected = { net: before.net, gross: before.gross };
     }
 
@@ -496,168 +552,9 @@ const updateDraftVoucher: ToolDef = {
   },
 };
 
-/* ---------------------------- book voucher ---------------------------- */
-
-const BOOK_TYPES = ["FULL_PAYMENT", "N", "CB", "O", "OF", "MTC"];
-
-const bookVoucher: ToolDef = {
-  name: "sevdesk_book_voucher",
-  title: "Mark a voucher paid by a bank transaction",
-  description:
-    "Link an open voucher (status 100) to one bank transaction and book the payment " +
-    "(Voucher/{id}/bookAmount), so the voucher counts as paid. Checks: voucher not enshrined and " +
-    "in EUR; transaction open (status 100, not linked/booked/private) and not enshrined; the " +
-    "direction fits (expense voucher <-> outgoing money); amount <= open amount and <= " +
-    "transaction amount. Without amount, the transaction amount must equal the open amount. " +
-    "type defaults to FULL_PAYMENT when the amount equals the open amount, else N (partial). " +
-    "Use CB for skonto, O/MTC for other reduced amounts. date defaults to the transaction date. " +
-    "Drafts must be finalized first (sevdesk_update_draft_voucher with finalize=true). " +
-    "Warns when the bank text does not mention the supplier. Verifies the paid amount and the " +
-    "transaction status afterwards.",
-  mutating: true,
-  inputSchema: {
-    type: "object",
-    properties: {
-      voucherId: str("Numeric voucher id."),
-      transactionId: str("Numeric bank transaction id (from sevdesk_list_transactions)."),
-      amount: { type: "number", description: "Amount to book, positive, in EUR (default: the open amount)." },
-      date: str("Payment date, yyyy-mm-dd or dd.mm.yyyy (default: transaction date)."),
-      type: str("Booking type (default FULL_PAYMENT or N, see description).", { enum: BOOK_TYPES }),
-      dryRun: bool("Show the checks and the request without sending it."),
-    },
-    required: ["voucherId", "transactionId"],
-    additionalProperties: false,
-  },
-  async handler(args, ctx) {
-    const voucherId = numericId(args, "voucherId");
-    const transactionId = numericId(args, "transactionId");
-    const v = await getVoucher(ctx, voucherId);
-    if (!v) throw new Error(`No voucher with id ${voucherId}.`);
-    refuseEnshrined("Voucher", voucherId, v);
-    const voucher = voucherSummary(v);
-    const status = String(v.status);
-    if (status === "50") {
-      throw new Error(
-        `Refused: voucher ${voucherId} is a draft. Finalize it first (sevdesk_update_draft_voucher with finalize=true).`,
-      );
-    }
-    if (status !== "100") {
-      throw new Error(`Refused: voucher ${voucherId} has status ${voucher.status}; only open vouchers (100) can be booked.`);
-    }
-    if (v.currency && v.currency !== "EUR") {
-      throw new Error(`Refused: voucher ${voucherId} is in ${v.currency}; only EUR vouchers.`);
-    }
-    const paidBefore = num(v.paidAmount);
-    const open = round2(num(v.sumGross) - paidBefore);
-    if (open <= 0) {
-      throw new Error(
-        `Refused: voucher ${voucherId} has no open amount (gross ${voucher.gross}, paid ${voucher.paidAmount}).`,
-      );
-    }
-
-    const t = await getTransaction(ctx, transactionId);
-    if (!t) throw new Error(`No bank transaction with id ${transactionId}.`);
-    refuseEnshrined("Transaction", transactionId, t);
-    const transaction = transactionSummary(t);
-    if (String(t.status) !== "100") {
-      throw new Error(
-        `Refused: transaction ${transactionId} has status ${transaction.status}; only open transactions (100) can be used.`,
-      );
-    }
-    const txAmount = num(t.amount);
-    const expense = v.creditDebit === "C";
-    if (expense ? txAmount >= 0 : txAmount <= 0) {
-      throw new Error(
-        `Refused: voucher ${voucherId} is ${expense ? "an expense (money out)" : "revenue (money in)"}, ` +
-          `but transaction ${transactionId} is ${txAmount >= 0 ? "incoming" : "outgoing"} (${transaction.amount}).`,
-      );
-    }
-    const available = round2(Math.abs(txAmount));
-    let amount: number;
-    if (args.amount !== undefined) {
-      amount = round2(num(args.amount));
-      if (!(amount > 0)) throw new Error("amount must be a positive number.");
-      if (amount > open + CENT) throw new Error(`Refused: amount ${amount} is more than the open amount ${open}.`);
-      if (amount > available + CENT) {
-        throw new Error(`Refused: amount ${amount} is more than the transaction amount ${available}.`);
-      }
-    } else {
-      if (Math.abs(available - open) > CENT) {
-        throw new Error(
-          `Refused: the transaction amount (${available}) differs from the open amount (${open}). ` +
-            "Give amount (and type, e.g. N for partial, CB for skonto) explicitly.",
-        );
-      }
-      amount = open;
-    }
-    const full = Math.abs(amount - open) <= CENT;
-    const type = args.type ? String(args.type) : full ? "FULL_PAYMENT" : "N";
-    if (!BOOK_TYPES.includes(type)) throw new Error(`type must be one of ${BOOK_TYPES.join(", ")}.`);
-    if (type === "FULL_PAYMENT" && !full) {
-      throw new Error(`type FULL_PAYMENT needs the full open amount ${open}; use N, CB, O or MTC.`);
-    }
-    const payDate = args.date ? isoDate(args.date, "date") : date(t.valueDate ?? t.entryDate);
-    const checkAccount = sub(t.checkAccount);
-    if (!checkAccount?.id) throw new Error(`Transaction ${transactionId} has no bank account.`);
-    // The spec's bookAmount examples send a positive amount for both sides.
-    const body = {
-      amount,
-      date: payDate,
-      type,
-      checkAccount: { id: Number(checkAccount.id), objectName: "CheckAccount" },
-      checkAccountTransaction: { id: Number(transactionId), objectName: "CheckAccountTransaction" },
-      createFeed: true,
-    };
-
-    // Not a refusal (bank texts vary a lot), but worth a second look.
-    const warnings: string[] = [];
-    const word = String(voucher.supplier ?? "").toLowerCase().match(/[a-zäöüß0-9]{3,}/)?.[0];
-    const bankText = `${t.payeePayerName ?? ""} ${t.paymtPurpose ?? ""}`.toLowerCase();
-    if (word && !bankText.includes(word)) {
-      warnings.push(
-        `The transaction text does not mention "${word}" (supplier ${voucher.supplier}). Check that it is the right payment.`,
-      );
-    }
-
-    if (isDryRun(args, ctx)) {
-      return {
-        dryRun: true,
-        warnings,
-        voucher,
-        openAmount: open,
-        transaction,
-        wouldSend: { method: "PUT", path: `/Voucher/${voucherId}/bookAmount`, body },
-      };
-    }
-    await ctx.client.request({ method: "PUT", path: `/Voucher/${voucherId}/bookAmount`, body, mutating: true });
-
-    const v2 = await getVoucher(ctx, voucherId);
-    const t2 = await getTransaction(ctx, transactionId);
-    const after = { voucher: v2 ? voucherSummary(v2) : null, transaction: t2 ? transactionSummary(t2) : null };
-    const paidNow = round2(num(v2?.paidAmount) - paidBefore);
-    const checks = {
-      paidAmountIncreased: Math.abs(paidNow - amount) <= 0.01 || (type !== "N" && String(v2?.status) === "1000"),
-      voucherPaidIfFull: type === "N" ? true : String(v2?.status) === "1000",
-      transactionLinked: t2 !== null && String(t2.status) !== "100",
-    };
-    return {
-      booked: true,
-      verified: Object.values(checks).every(Boolean),
-      checks,
-      warnings,
-      amount,
-      type,
-      date: payDate,
-      before: { voucher, transaction },
-      after,
-    };
-  },
-};
-
 export const cleanupTools: ToolDef[] = [
   deleteVoucher,
   setTransactionPrivate,
   uploadVoucherFileContent,
   updateDraftVoucher,
-  bookVoucher,
 ];

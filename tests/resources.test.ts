@@ -607,7 +607,8 @@ describe("sevdesk_link_transaction", () => {
           const v = vouchers[id]!;
           const amount = Math.abs(num((req.body as Row).amount));
           v.paidAmount = num(v.paidAmount) + amount;
-          v.status = num(v.paidAmount) >= num(v.sumGross) ? "1000" : "750";
+          const settles = (req.body as Row).type !== "N";
+          v.status = settles || num(v.paidAmount) >= num(v.sumGross) ? "1000" : "750";
           linked += amount;
           tx.status = linked >= Math.abs(num(tx.amount)) ? "400" : "200";
           return { status: 200, data: { objects: v } };
@@ -662,7 +663,7 @@ describe("sevdesk_link_transaction", () => {
     expect(sent[0]!.body).toEqual({
       amount: -16.99,
       date: "2026-06-24",
-      type: "FULL_PAYMENT",
+      type: "N", // never FULL_PAYMENT: sevDesk refuses it for money out
       checkAccount: { id: 6232758, objectName: "CheckAccount" },
       checkAccountTransaction: { id: 1869078520, objectName: "CheckAccountTransaction" },
       createFeed: false,
@@ -842,6 +843,77 @@ describe("sevdesk_link_transaction", () => {
     expect(result).toMatchObject({ dryRun: true, unassigned: 10 });
     expect(result.wouldSend).toHaveLength(2);
     expect(sent).toEqual([]);
+  });
+
+  describe("booking type and supplier warning", () => {
+    it("books Skonto (CB) with an amount below the open amount and reports the voucher paid", async () => {
+      const { ctx, sent } = linkCtx({ "1": voucher({ sumGross: "100" }) }, openTx({ amount: "-98" }));
+      const r = (await link.handler({ voucherId: "1", transactionId: "2", amount: 98, type: "CB" }, ctx)) as {
+        vouchers: Array<Row>;
+      };
+      expect(sent[0]!.body).toMatchObject({ amount: -98, type: "CB" });
+      expect(r.vouchers[0]).toMatchObject({ type: "CB", status: "bezahlt", paid: true });
+    });
+
+    it("refuses FULL_PAYMENT, and a reduction type for the full open amount, before any booking", async () => {
+      const { ctx, sent } = linkCtx({ "1": voucher({ sumGross: "100" }) }, openTx({ amount: "-100" }));
+      await expect(
+        link.handler({ voucherId: "1", transactionId: "2", type: "FULL_PAYMENT" }, ctx),
+      ).rejects.toThrow(/type must be one of N, CB, MTC, O/);
+      await expect(link.handler({ voucherId: "1", transactionId: "2", type: "CB" }, ctx)).rejects.toThrow(
+        /books a reduced amount/,
+      );
+      expect(sent).toHaveLength(0);
+    });
+
+    it("verifies the read-back: partial leaves 750 and the transaction linked", async () => {
+      const { ctx } = linkCtx({ "1": voucher({ sumGross: "100" }) }, openTx({ amount: "-100" }));
+      const r = (await link.handler({ voucherId: "1", transactionId: "2", amount: 60 }, ctx)) as Row;
+      expect(r).toMatchObject({ verified: true, transaction: { status: "verknüpft" } });
+    });
+
+    it("takes the type per allocation and refuses a top-level type with allocations", async () => {
+      const { ctx, sent } = linkCtx(
+        { "1": voucher({ sumGross: "100" }), "2": voucher({ sumGross: "50" }) },
+        openTx({ amount: "-148" }),
+      );
+      await link.handler(
+        { transactionId: "9", allocations: [{ voucherId: "1", amount: 98, type: "CB" }, { voucherId: "2" }] },
+        ctx,
+      );
+      expect(sent.map((r) => (r.body as Row).type)).toEqual(["CB", "N"]);
+      await expect(
+        link.handler({ transactionId: "9", type: "CB", allocations: [{ voucherId: "1" }] }, ctx),
+      ).rejects.toThrow(/inside its allocation/);
+    });
+
+    it("refuses an unknown type", async () => {
+      const { ctx } = linkCtx({ "1": voucher() }, openTx());
+      await expect(link.handler({ voucherId: "1", transactionId: "2", type: "OF" }, ctx)).rejects.toThrow(/type must be one of/);
+    });
+
+    it("warns, in the dry run and the result, when the bank text does not name the supplier", async () => {
+      const t = openTx({ payeePayerName: "Telekom", paymtPurpose: "Rechnung 5" });
+      const dry = (await link.handler(
+        { voucherId: "1", transactionId: "2", dryRun: true },
+        linkCtx({ "1": voucher({ supplierName: "Anthropic PBC" }) }, t).ctx,
+      )) as { warnings: string[] };
+      expect(dry.warnings[0]).toMatch(/anthropic/);
+      const real = (await link.handler(
+        { voucherId: "1", transactionId: "2" },
+        linkCtx({ "1": voucher({ supplierName: "Anthropic PBC" }) }, t).ctx,
+      )) as { warnings: string[] };
+      expect(real.warnings).toHaveLength(1);
+    });
+
+    it("has no warning when the text mentions the supplier", async () => {
+      const t = openTx({ payeePayerName: "ANTHROPIC, PBC" });
+      const r = (await link.handler(
+        { voucherId: "1", transactionId: "2", dryRun: true },
+        linkCtx({ "1": voucher({ supplierName: "Anthropic PBC" }) }, t).ctx,
+      )) as { warnings: string[] };
+      expect(r.warnings).toEqual([]);
+    });
   });
 });
 
