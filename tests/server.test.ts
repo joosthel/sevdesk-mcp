@@ -243,6 +243,8 @@ describe("buildServer handlers", () => {
       ["createTransaction", {}, { status: "400", amount: -1 }],
       ["updatecreditNote", { creditNoteId: 1 }, { status: "1000" }],
       ["updatecreditNote", { creditNoteId: 1, status: 1000 }, {}],
+      ["updatecreditNote", { creditNoteId: 1 }, { status: 750 }],
+      ["createInvoiceByFactory", {}, { invoice: { status: "750" } }],
       ["createInvoiceByFactory", {}, { invoice: { status: "1000", payDate: "2026-01-01" } }],
       ["createcreditNote", {}, { creditNote: { status: 100 }, creditNotePosSave: [{ paidAmount: 5 }] }],
       ["updateCheckAccountTransaction", { checkAccountTransactionId: 1 }, { targetTransaction: { id: 2, objectName: "CheckAccountTransaction" } }],
@@ -297,6 +299,10 @@ describe("buildServer handlers", () => {
         ["createTransaction", {}, { status: 100, amount: -1 }],
         ["createInvoiceByFactory", {}, { invoice: { status: 100 } }],
         ["updatecreditNote", { creditNoteId: 1 }, { header: "x" }],
+        // status 1000 on a contact means "active"; only a document's own status counts.
+        ["createContact", {}, { status: 1000, name: "x" }],
+        ["updateOrder", { orderId: 1 }, { status: 1000 }],
+        ["createInvoiceByFactory", {}, { invoice: { status: 100, contact: { id: 1, objectName: "Contact", status: 1000 } } }],
       ] as Array<[string, Row, Row]>) {
         const r = await s.call("sevdesk_call", { operationId, params, body, dryRun: true });
         expect(r.isError, `${operationId} ${JSON.stringify(body)}`).toBeFalsy();

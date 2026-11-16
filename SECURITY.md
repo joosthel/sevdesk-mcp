@@ -46,8 +46,8 @@ guard lives in this server, not in the model's goodwill.
   `voucherFactorySaveVoucher` with the same on `voucher`,
   `createTransaction` with a status other than 100, and any write that
   carries `paidAmount`, `payDate`, a transfer link (`sourceTransaction`,
-  `targetTransaction`) or a status of 1000 or more anywhere in its body or
-  query. All of it is refused before any request, dry runs included.
+  `targetTransaction`) anywhere in its body or query, or that sets an
+  invoice, credit note or voucher to 750 (partly paid) or 1000 (paid). All of it is refused before any request, dry runs included.
 - **No filesystem access unless you grant it.** The receipt file tools are
   disabled until `SEVDESK_RECEIPT_DIRS` names an explicit allowlist of absolute
   directories; paths outside it are refused. Containment is checked on real

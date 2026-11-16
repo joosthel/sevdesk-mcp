@@ -14,8 +14,8 @@
   `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`,
   `voucherFactorySaveVoucher` with the same on `voucher`, `createTransaction`
   with a status other than 100, and any write whose body or query carries
-  `paidAmount`, `payDate`, a transfer link or a status of 1000 or more
-  (e.g. an invoice or credit note saved as paid). Array and string bodies on
+  `paidAmount`, `payDate` or a transfer link, or sets an invoice, credit
+  note or voucher to 750 (partly paid) or 1000 (paid). Array and string bodies on
   writes are refused. `sevdesk_describe_operation` says so.
 - `sevdesk_call` refuses the booking operations (`bookVoucher`,
   `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,

@@ -106,29 +106,47 @@ export const BODY_DEPENDENT_BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
 /** Fields that record a payment or link a transfer, on any document. */
 const PAYMENT_FIELDS = new Set(["paidamount", "paydate", "sourcetransaction", "targettransaction"]);
 
-/**
- * The first field anywhere in a write body (or query) that books: a payment
- * field, or a status of 1000+ (paid / settled on vouchers, invoices, credit
- * notes). Catches the generic writes BODY_DEPENDENT_BOOKING_OPERATIONS does
- * not list, e.g. createInvoiceByFactory or updatecreditNote with status 1000.
- */
-export function bookingField(v: unknown, depth = 0): string | null {
+/** The first payment field anywhere in a write body or query, or null. */
+function paymentField(v: unknown, depth = 0): string | null {
   if (depth > 8 || typeof v !== "object" || v === null) return null;
   for (const [k, val] of Object.entries(v)) {
     const key = k.toLowerCase();
     if (PAYMENT_FIELDS.has(key) && (key === "paidamount" ? pays(val) : present(val))) return k;
-    if (key === "status" && present(val) && Number(val) >= 1000) return `${k} ${String(val)}`;
-    const deeper = bookingField(val, depth + 1);
+    const deeper = paymentField(val, depth + 1);
     if (deeper) return deeper;
   }
   return null;
 }
 
-export function bookingReason(op: { operationId: string }, body?: unknown): string | null {
+const DOCUMENT_PATH = /^\/(Invoice|CreditNote|Voucher)(\/|$)/;
+
+/**
+ * What in a write body (or query) records a payment: a payment field
+ * anywhere, or status 750 (teilbezahlt) / 1000 (bezahlt) on the invoice,
+ * credit note or voucher itself. Only the document's own status counts; a
+ * contact's status 1000 means "active", not paid.
+ */
+export function bookingField(op: { path?: string }, v: unknown): string | null {
+  const field = paymentField(v);
+  if (field) return field;
+  if (!op.path || !DOCUMENT_PATH.test(op.path)) return null;
+  const b = asObject(v);
+  for (const [name, s] of [
+    ["status", b.status],
+    ["invoice.status", asObject(b.invoice).status],
+    ["creditNote.status", asObject(b.creditNote).status],
+    ["voucher.status", asObject(b.voucher).status],
+  ] as const) {
+    if (present(s) && Number(s) >= 750) return `${name} ${String(s)}`;
+  }
+  return null;
+}
+
+export function bookingReason(op: { operationId: string; path?: string }, body?: unknown): string | null {
   if (BOOKING_OPERATIONS.has(op.operationId)) {
     return "books or removes payments, or books transactions automatically";
   }
-  const field = bookingField(body);
+  const field = bookingField(op, body);
   if (field) return `sets ${field}, which records a payment or marks a document paid`;
   const b = asObject(body);
   switch (op.operationId) {

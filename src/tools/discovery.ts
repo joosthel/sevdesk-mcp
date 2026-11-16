@@ -153,7 +153,7 @@ const callOperation: ToolDef = {
     if (!reason && ctx.config.allowBooking !== true && op.mutating) {
       const pathNames = new Set(op.params.filter((p) => p.in === "path").map((p) => p.name));
       const extra = Object.keys(params).filter((k) => !pathNames.has(k));
-      const field = bookingField(Object.fromEntries(extra.map((k) => [k, params[k]])));
+      const field = bookingField(op, Object.fromEntries(extra.map((k) => [k, params[k]])));
       if (field) {
         reason = `sets ${field} in the query string, which records a payment or marks a document paid`;
       } else if (extra.length && BODY_DEPENDENT_BOOKING_OPERATIONS.has(op.operationId)) {
