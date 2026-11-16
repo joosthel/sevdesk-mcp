@@ -1282,13 +1282,16 @@ const MAX_ALLOCATIONS = 20;
 export const BOOK_TYPES = ["N", "CB", "MTC", "O"] as const;
 type BookType = (typeof BOOK_TYPES)[number];
 
+/** Largest part of the open amount a reduction type (CB, MTC, O) may write off. */
+const MAX_WRITE_OFF = 0.1;
+
 const REDUCTION_TYPES: readonly BookType[] = ["CB", "MTC", "O"];
 
 const TYPE_HELP =
   "Booking type, default N (normal payment: the voucher is paid when the amount is its full " +
   "open amount, else partly paid). CB = reduced amount due to discount (Skonto), MTC = reduced " +
   "amount due to bank charges (monetary traffic costs), O = reduced amount for other reasons. " +
-  "CB, MTC and O need an amount below the open amount and settle the voucher.";
+  "CB, MTC and O need an amount below the open amount (at most 10 % less) and settle the voucher.";
 
 /** The type booked when the caller gives none. ONE place for the rule. */
 export function defaultBookType(): BookType {
@@ -1535,6 +1538,16 @@ const linkTransaction: ToolDef = {
           `Voucher ${a.voucherId}: type ${type} books a reduced amount, but ${amount} is the full open ` +
             "amount. Use N, or give an amount below the open amount.",
         );
+      }
+      if (REDUCTION_TYPES.includes(type)) {
+        // Whole cents, so exactly 10 % is allowed and float noise is not.
+        const writtenOff = Math.round(open * 100) - Math.round(amount * 100);
+        if (writtenOff * 10 > Math.round(open * 100)) {
+          throw new Error(
+            `Voucher ${a.voucherId}: type ${type} would write off ${round2(open - amount)} of ${open}, more than ` +
+              `${MAX_WRITE_OFF * 100} % of the open amount. Book larger differences in the sevDesk UI.`,
+          );
+        }
       }
       const warning = supplierWarning(a.voucherId, voucher, tx);
       if (warning) warnings.push(warning);

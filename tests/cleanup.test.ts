@@ -123,7 +123,7 @@ const draft = (extra: Row = {}): Row => ({
   ...extra,
 });
 
-const draftPosition = { id: "21", voucher: { id: "11" }, sumNet: 214.2, taxRate: 0, sumTax: 0, sumGross: 214.2, accountDatev: { id: "5000", objectName: "AccountDatev" } };
+const draftPosition = { id: "21", voucher: { id: "11" }, net: "1", sumNet: 214.2, taxRate: 0, sumTax: 0, sumGross: 214.2, accountDatev: { id: "5000", objectName: "AccountDatev" } };
 
 const openTx = (extra: Row = {}): Row => ({
   id: "31",
@@ -356,7 +356,7 @@ describe("sevdesk_update_draft_voucher: finalize gate, tax rule, gross round tri
   });
 
   it("re-sends a gross-entered position as gross, not net", async () => {
-    const gross = { ...draftPosition, net: false, taxRate: 19, sumNet: 180.0, sumGross: 214.2, sumTax: 34.2 };
+    const gross = { ...draftPosition, net: "0", taxRate: 19, sumNet: 180.0, sumGross: 214.2, sumTax: 34.2 };
     const s = fakeSevdesk({ vouchers: [draft({ sumNet: 180, sumTax: 34.2 })], positions: [gross] });
     await updateDraft.handler({ voucherId: "11", description: "INV-2" }, s.ctx);
     const pos = (s.sent[0]!.body as { voucherPosSave: Row[] }).voucherPosSave[0]!;
@@ -365,7 +365,7 @@ describe("sevdesk_update_draft_voucher: finalize gate, tax rule, gross round tri
   });
 
   it("re-sends a net-entered position as net", async () => {
-    const net = { ...draftPosition, net: true, taxRate: 0 };
+    const net = { ...draftPosition, net: "1", taxRate: 0 };
     const s = fakeSevdesk({ vouchers: [draft()], positions: [net] });
     await updateDraft.handler({ voucherId: "11", description: "INV-2" }, s.ctx);
     expect((s.sent[0]!.body as { voucherPosSave: Row[] }).voucherPosSave[0]).toMatchObject({ net: true, sumNet: 214.2 });
@@ -390,5 +390,62 @@ describe("sevdesk_upload_voucher_file_content: XML e-invoices", () => {
     await expect(upload.handler({ fileName: "a.xml", base64Content: Buffer.from([0x3c, 0x61, 0x00, 0xff, 0x3e]).toString("base64") }, s.ctx)).rejects.toThrow(/not a PDF/);
     await expect(upload.handler({ fileName: "a.pdf", base64Content: xml("<a>x</a>") }, s.ctx)).rejects.toThrow(/application\/xml.*\.pdf/);
     expect(s.sent).toHaveLength(0);
+  });
+});
+
+describe("sevdesk_update_draft_voucher: strict net flag, rounding, failed checks", () => {
+  it.each([[true], ["1"], [1], ["true"]])("reads net=%j as net", async (net) => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition, net }] });
+    await updateDraft.handler({ voucherId: "11", description: "x" }, s.ctx);
+    expect((s.sent[0]!.body as { voucherPosSave: Row[] }).voucherPosSave[0]).toMatchObject({ net: true, sumNet: 214.2 });
+  });
+
+  it.each([[false], ["0"], [0], ["false"]])("reads net=%j as gross", async (net) => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition, net, sumGross: 214.2 }] });
+    await updateDraft.handler({ voucherId: "11", description: "x" }, s.ctx);
+    const pos = (s.sent[0]!.body as { voucherPosSave: Row[] }).voucherPosSave[0]!;
+    expect(pos).toMatchObject({ net: false, sumGross: 214.2 });
+    expect(pos).not.toHaveProperty("sumNet");
+  });
+
+  it.each([[undefined], [null], ["maybe"], [""]])("refuses an unreadable net flag (%j)", async (net) => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition, net }] });
+    await expect(updateDraft.handler({ voucherId: "11", description: "x" }, s.ctx)).rejects.toThrow(/entered as net or gross/);
+    expect(s.sent).toHaveLength(0);
+  });
+
+  it("rounds per position before summing the expected totals", async () => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition }] });
+    const out = (await updateDraft.handler(
+      { voucherId: "11", dryRun: true, positions: Array.from({ length: 10 }, () => ({ sumNet: 0.03, taxRate: 19 })) },
+      s.ctx,
+    )) as { expected: Row };
+    expect(out.expected).toEqual({ net: 0.3, gross: 0.4 });
+  });
+
+  it("reports verified: false when the sums come back different", async () => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition }] });
+    const real = s.ctx.client.request.bind(s.ctx.client);
+    (s.ctx.client as { request: unknown }).request = async (req: { path: string }) => {
+      const out = await real(req as never);
+      if (req.path === "/Voucher/Factory/saveVoucher") s.vouchers.get("11")!.sumGross = 999;
+      return out;
+    };
+    const out = (await updateDraft.handler({ voucherId: "11", description: "x" }, s.ctx)) as { verified: boolean; checks: Row };
+    expect(out.verified).toBe(false);
+    expect(out.checks).toMatchObject({ sums: false, fileKept: true });
+  });
+
+  it("reports verified: false when the attached file is lost", async () => {
+    const s = fakeSevdesk({ vouchers: [draft()], positions: [{ ...draftPosition }] });
+    const real = s.ctx.client.request.bind(s.ctx.client);
+    (s.ctx.client as { request: unknown }).request = async (req: { path: string }) => {
+      const out = await real(req as never);
+      if (req.path === "/Voucher/Factory/saveVoucher") s.vouchers.get("11")!.document = null;
+      return out;
+    };
+    const out = (await updateDraft.handler({ voucherId: "11", description: "x" }, s.ctx)) as { verified: boolean; checks: Row };
+    expect(out.verified).toBe(false);
+    expect(out.checks).toMatchObject({ fileKept: false, sums: true });
   });
 });

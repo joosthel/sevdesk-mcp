@@ -905,6 +905,30 @@ describe("sevdesk_link_transaction", () => {
       ).rejects.toThrow(/inside its allocation/);
     });
 
+    it("refuses a write-off above 10 % of the open amount, allows exactly 10 %", async () => {
+      const big = linkCtx({ "1": voucher({ sumGross: "100" }) }, openTx({ amount: "-89.99" }));
+      await expect(
+        link.handler({ voucherId: "1", transactionId: "2", amount: 89.99, type: "CB" }, big.ctx),
+      ).rejects.toThrow(/more than 10 % of the open amount.*sevDesk UI/);
+      expect(big.sent).toHaveLength(0);
+      const edge = linkCtx({ "1": voucher({ sumGross: "100" }) }, openTx({ amount: "-90" }));
+      await link.handler({ voucherId: "1", transactionId: "2", amount: 90, type: "O" }, edge.ctx);
+      expect(edge.sent).toHaveLength(1);
+    });
+
+    it("reports verified: false when the read-back disagrees", async () => {
+      const v = voucher({ sumGross: "100" });
+      const { ctx } = linkCtx({ "1": v }, openTx({ amount: "-100" }));
+      const real = ctx.client.request.bind(ctx.client);
+      (ctx.client as { request: unknown }).request = async (req: { method: string; path: string }) => {
+        const out = await real(req as never);
+        if (req.method === "PUT") v.status = "100"; // sevDesk "forgot" the booking
+        return out;
+      };
+      const r = (await link.handler({ voucherId: "1", transactionId: "2" }, ctx)) as Row;
+      expect(r.verified).toBe(false);
+    });
+
     it("refuses an unknown type", async () => {
       const { ctx } = linkCtx({ "1": voucher() }, openTx());
       await expect(link.handler({ voucherId: "1", transactionId: "2", type: "OF" }, ctx)).rejects.toThrow(/type must be one of/);

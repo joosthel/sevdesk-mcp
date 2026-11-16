@@ -358,6 +358,21 @@ const positionSchema = {
   additionalProperties: false,
 };
 
+/**
+ * VoucherPos `net` as sevDesk returns it: the strings "0" / "1" (live), or a
+ * real boolean. Anything else is refused rather than guessed, because reading
+ * a gross-entered position as net shifts it by a cent.
+ */
+function entryIsNet(p: Row): boolean {
+  const v = typeof p.net === "string" ? p.net.trim().toLowerCase() : p.net;
+  if (v === true || v === 1 || v === "1" || v === "true") return true;
+  if (v === false || v === 0 || v === "0" || v === "false") return false;
+  throw new Error(
+    `Refused: position ${String(p.id)} reports net=${JSON.stringify(p.net)}, so it is unclear whether it was ` +
+      "entered as net or gross. Correct the voucher in the sevDesk UI.",
+  );
+}
+
 const updateDraftVoucher: ToolDef = {
   name: "sevdesk_update_draft_voucher",
   title: "Correct a draft voucher",
@@ -456,6 +471,7 @@ const updateDraftVoucher: ToolDef = {
     let expected: { net: number; gross: number };
     if (positionsGiven) {
       const net = typeof list[0]!.sumNet === "number";
+      // Rounded per position, then summed, like sevDesk's own totals.
       let sumNet = 0;
       let sumGross = 0;
       voucherPosSave = list.map((p, i) => {
@@ -465,8 +481,14 @@ const updateDraftVoucher: ToolDef = {
         if (typeof amount !== "number" || (net ? p.sumGross !== undefined : p.sumNet !== undefined)) {
           throw new Error(`${n}: give ${net ? "sumNet" : "sumGross"} (all positions must use the same one).`);
         }
-        sumNet += net ? amount : amount / (1 + taxRate / 100);
-        sumGross += net ? amount * (1 + taxRate / 100) : amount;
+        if (net) {
+          sumNet += round2(amount);
+          sumGross += round2(round2(amount) + round2((amount * taxRate) / 100));
+        } else {
+          const gross = round2(amount);
+          sumGross += gross;
+          sumNet += round2(gross / (1 + taxRate / 100));
+        }
         const old = oldPositions[i];
         const newAccount = optId(p, "accountDatevId");
         const accountDatev = newAccount
@@ -497,7 +519,7 @@ const updateDraftVoucher: ToolDef = {
       // form they were entered (VoucherPos `net`): a gross-entered position
       // re-sent as net could shift by a cent.
       voucherPosSave = oldPositions.map((p) => {
-        const isNet = p.net !== false;
+        const isNet = entryIsNet(p);
         return {
           id: Number(p.id),
           objectName: "VoucherPos",
