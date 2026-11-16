@@ -500,6 +500,24 @@ describe("sevdesk_create_voucher", () => {
     expect(out.wouldSend.body.voucher).not.toHaveProperty("filename");
   });
 
+  it("refuses status 100/1000, payDate and paidAmount without SEVDESK_ALLOW_BOOKING, dry runs included", async () => {
+    const ctx = ctxWith(() => ({ status: 200, data: {} }));
+    for (const extra of [{ status: "100" }, { status: 1000 }, { payDate: "01.09.2026" }, { extra: { paidAmount: 5 } }]) {
+      await expect(createVoucher.handler({ ...args, ...extra }, ctx)).rejects.toThrow(/SEVDESK_ALLOW_BOOKING/);
+    }
+    await expect(createVoucher.handler({ ...args, status: "50" }, ctx)).resolves.toBeDefined();
+    await expect(createVoucher.handler(args, ctx)).resolves.toBeDefined();
+  });
+
+  it("allows status 100/1000 and payDate with SEVDESK_ALLOW_BOOKING", async () => {
+    const base = ctxWith(() => ({ status: 200, data: {} }));
+    const ctx = { ...base, config: { ...base.config, allowBooking: true } } as ToolContext;
+    const out = (await createVoucher.handler({ ...args, status: "1000", payDate: "01.09.2026" }, ctx)) as {
+      wouldSend: { body: { voucher: Row } };
+    };
+    expect(out.wouldSend.body.voucher).toMatchObject({ status: "1000", payDate: "01.09.2026" });
+  });
+
   it("refuses without a taxRuleId instead of defaulting one", async () => {
     const { taxRuleId: _omit, ...noRule } = args;
     await expect(

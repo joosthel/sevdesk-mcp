@@ -1,5 +1,5 @@
 import {
-  BOOKING_OPERATIONS,
+  bookingReason,
   briefOperation,
   catalog,
   describeOperation,
@@ -101,7 +101,9 @@ const callOperation: ToolDef = {
     "SEVDESK_DRY_RUN=true or `dryRun` is passed. Operations with a `preventSendBy` query " +
     "parameter (the *GetPdf reads) default it to true so a read does not mark the document as sent. " +
     "GETs that change state (sendByWithRender, enshrine flags, preventSendBy=false) count as writes. " +
-    "Booking operations (bookVoucher, bookInvoice, bookCreditNote and their resetToOpen) are " +
+    "Booking operations (bookVoucher, bookInvoice, bookCreditNote, their resetToOpen and resetToDraft, " +
+    "createPrivateTransactionRule) and writes that set a transaction status or move a voucher out of " +
+    "draft or mark it paid (updateCheckAccountTransaction, updateVoucher, voucherFactorySaveVoucher) are " +
     "refused unless SEVDESK_ALLOW_BOOKING=true; prefer sevdesk_link_transaction for vouchers. " +
     "Can call DELETE operations, which are irreversible.",
   mutating: true,
@@ -139,10 +141,11 @@ const callOperation: ToolDef = {
     const body = emptyBody ? undefined : args.body;
 
     if (op.mutating && ctx.config.readOnly) throw new ReadOnlyError(op.operationId);
-    if (BOOKING_OPERATIONS.has(op.operationId) && ctx.config.allowBooking !== true) {
+    const reason = ctx.config.allowBooking === true ? null : bookingReason(op, body);
+    if (reason) {
       throw new Error(
-        `Refused: ${op.operationId} books or removes payments in sevDesk (or books transactions automatically). Booking is off unless the ` +
-          "server runs with SEVDESK_ALLOW_BOOKING=true.",
+        `Refused: ${op.operationId} ${reason}. Booking is off unless the server runs with ` +
+          "SEVDESK_ALLOW_BOOKING=true.",
       );
     }
 

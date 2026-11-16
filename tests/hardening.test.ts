@@ -800,7 +800,7 @@ describe("round 6", () => {
   });
 
   it("create_voucher accepts only status 50/100/1000", async () => {
-    const c = { client: {}, config: { readOnly: false, dryRun: true } } as unknown as ToolContext;
+    const c = { client: {}, config: { readOnly: false, dryRun: true, allowBooking: true } } as unknown as ToolContext;
     const a = { supplierName: "A", voucherDate: "01.09.2026", taxRuleId: "9", positions: [{ sumNet: 1, taxRate: 19 }] };
     for (const bad of ["75", "draft", 1]) {
       await expect(tool("sevdesk_create_voucher").handler({ ...a, status: bad }, c)).rejects.toThrow(/status must be/);

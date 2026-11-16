@@ -180,6 +180,9 @@ describe("buildServer handlers", () => {
       ["voucherResetToOpen", { voucherId: 1 }],
       ["invoiceResetToOpen", { invoiceId: 1 }],
       ["creditNoteResetToOpen", { creditNoteId: 1 }],
+      ["voucherResetToDraft", { voucherId: 1 }],
+      ["invoiceResetToDraft", { invoiceId: 1 }],
+      ["creditNoteResetToDraft", { creditNoteId: 1 }],
       ["createPrivateTransactionRule", {}],
     ];
     for (const [operationId, params] of cases) {
@@ -190,7 +193,7 @@ describe("buildServer handlers", () => {
       }
     }
     // Other writes are unaffected.
-    const other = await s.call("sevdesk_call", { operationId: "voucherResetToDraft", params: { voucherId: 1 }, dryRun: true });
+    const other = await s.call("sevdesk_call", { operationId: "createContact", body: { name: "X" }, dryRun: true });
     expect(other.isError).toBeFalsy();
     expect(fetchCalls).toHaveLength(0);
     await s.close();
@@ -216,7 +219,56 @@ describe("buildServer handlers", () => {
       expect(op!.mutating, id).toBe(true);
       expect(describeOperation(op!)).toMatch(/SEVDESK_ALLOW_BOOKING/);
     }
-    expect(describeOperation(findOperation("voucherResetToDraft")!)).not.toMatch(/SEVDESK_ALLOW_BOOKING/);
+    expect(describeOperation(findOperation("createContact")!)).not.toMatch(/SEVDESK_ALLOW_BOOKING/);
+    for (const id of ["updateCheckAccountTransaction", "updateVoucher", "voucherFactorySaveVoucher"]) {
+      expect(describeOperation(findOperation(id)!), id).toMatch(/only when the body.*SEVDESK_ALLOW_BOOKING/);
+    }
+  });
+
+  describe("body-dependent booking gate on sevdesk_call", () => {
+    const cases: Array<[string, Row, Row]> = [
+      ["updateCheckAccountTransaction", { checkAccountTransactionId: 1 }, { status: 300 }],
+      ["updateVoucher", { voucherId: 1 }, { status: 100 }],
+      ["updateVoucher", { voucherId: 1 }, { status: "1000" }],
+      ["updateVoucher", { voucherId: 1 }, { paidAmount: 10 }],
+      ["updateVoucher", { voucherId: 1 }, { payDate: "2026-01-01" }],
+      ["voucherFactorySaveVoucher", {}, { voucher: { status: 100 } }],
+      ["voucherFactorySaveVoucher", {}, { voucher: { status: 50, paidAmount: 5 } }],
+      ["voucherFactorySaveVoucher", {}, { voucher: { payDate: "2026-01-01" } }],
+    ];
+
+    it("refuses them without the flag, dry runs included, and allows them with it", async () => {
+      const fetchCalls: string[] = [];
+      const off = await connect({ fetchCalls });
+      const on = await connect({ allowBooking: true });
+      for (const [operationId, params, body] of cases) {
+        for (const dryRun of [false, true]) {
+          const r = await off.call("sevdesk_call", { operationId, params, body, dryRun });
+          expect(r.isError, `${operationId} ${JSON.stringify(body)}`).toBe(true);
+          expect(r.content[0]!.text).toMatch(/SEVDESK_ALLOW_BOOKING/);
+        }
+        const ok = await on.call("sevdesk_call", { operationId, params, body, dryRun: true });
+        expect(ok.isError, `${operationId} ${JSON.stringify(body)}`).toBeFalsy();
+      }
+      expect(fetchCalls).toHaveLength(0);
+      await off.close();
+      await on.close();
+    });
+
+    it("still allows ordinary updates without the flag", async () => {
+      const s = await connect();
+      for (const [operationId, params, body] of [
+        ["updateVoucher", { voucherId: 1 }, { description: "INV-2" }],
+        ["updateVoucher", { voucherId: 1 }, { status: 50 }],
+        ["updateCheckAccountTransaction", { checkAccountTransactionId: 1 }, { paymtPurpose: "x" }],
+        ["voucherFactorySaveVoucher", {}, { voucher: { status: "50", description: "x" } }],
+        ["voucherFactorySaveVoucher", {}, { voucher: { description: "x" } }],
+      ] as Array<[string, Row, Row]>) {
+        const r = await s.call("sevdesk_call", { operationId, params, body, dryRun: true });
+        expect(r.isError, `${operationId} ${JSON.stringify(body)}`).toBeFalsy();
+      }
+      await s.close();
+    });
   });
 
   it("sevdesk_call refuses state-changing GETs in read-only mode with no HTTP", async () => {

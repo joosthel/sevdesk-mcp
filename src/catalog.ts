@@ -73,9 +73,55 @@ export const BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
   "voucherResetToOpen",
   "invoiceResetToOpen",
   "creditNoteResetToOpen",
+  // Resetting to draft unlinks the payments booked on the document.
+  "voucherResetToDraft",
+  "invoiceResetToDraft",
+  "creditNoteResetToDraft",
   // A rule marks future transactions private, i.e. books them automatically.
   "createPrivateTransactionRule",
 ]);
+
+const present = (v: unknown) => v !== undefined && v !== null && v !== "";
+const isDraft = (v: unknown) => !present(v) || String(v).trim() === "50";
+const asObject = (v: unknown): Record<string, unknown> =>
+  typeof v === "object" && v !== null && !Array.isArray(v) ? (v as Record<string, unknown>) : {};
+
+/** Generic writes that also book, depending on what the body sets. */
+export const BODY_DEPENDENT_BOOKING_OPERATIONS: ReadonlySet<string> = new Set([
+  "updateCheckAccountTransaction",
+  "updateVoucher",
+  "voucherFactorySaveVoucher",
+]);
+
+/**
+ * Why a call needs SEVDESK_ALLOW_BOOKING, or null when it does not. One rule
+ * for sevdesk_call and sevdesk_describe_operation: the operations in
+ * BOOKING_OPERATIONS always; the three generic writes only when the body
+ * sets a transaction status (private), moves a voucher out of draft, or
+ * carries paidAmount / payDate (marks it paid).
+ */
+export function bookingReason(op: { operationId: string }, body?: unknown): string | null {
+  if (BOOKING_OPERATIONS.has(op.operationId)) {
+    return "books or removes payments, or books transactions automatically";
+  }
+  const b = asObject(body);
+  switch (op.operationId) {
+    case "updateCheckAccountTransaction":
+      return present(b.status) ? "sets a transaction status (for example private), which books it" : null;
+    case "updateVoucher":
+      return !isDraft(b.status) || present(b.paidAmount) || present(b.payDate)
+        ? "sets a voucher open or paid (status, paidAmount or payDate in the body)"
+        : null;
+    case "voucherFactorySaveVoucher": {
+      const v = asObject(b.voucher);
+      return !isDraft(v.status) || present(v.paidAmount) || present(v.payDate)
+        ? "saves a voucher as open or paid (voucher.status, paidAmount or payDate in the body)"
+        : null;
+    }
+    default:
+      return null;
+  }
+}
 
 export function describeOperation(op: Operation): string {
   const lines: string[] = [
@@ -86,6 +132,16 @@ export function describeOperation(op: Operation): string {
   ];
   if (BOOKING_OPERATIONS.has(op.operationId)) {
     lines.push("booking: yes — books or removes payments, or books transactions automatically; needs SEVDESK_ALLOW_BOOKING=true");
+  }
+  if (BODY_DEPENDENT_BOOKING_OPERATIONS.has(op.operationId)) {
+    lines.push(
+      "booking: only when the body " +
+        (op.operationId === "updateCheckAccountTransaction"
+          ? "sets status (for example private)"
+          : "sets status other than 50, paidAmount or payDate" +
+            (op.operationId === "voucherFactorySaveVoucher" ? " on voucher" : "")) +
+        "; those calls need SEVDESK_ALLOW_BOOKING=true",
+    );
   }
   if (op.summary) lines.push(`summary: ${op.summary}`);
   if (op.description) lines.push(`description: ${op.description}`);

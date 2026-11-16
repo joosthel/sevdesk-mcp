@@ -604,10 +604,10 @@ const createVoucher: ToolDef = {
         { enum: VOUCHER_RULE_IDS },
       ),
       creditDebit: str("C = credit, D = debit.", { enum: ["C", "D"] }),
-      status: str("50 = Entwurf, 100 = offen, 1000 = bezahlt (default 50).", {
+      status: str("50 = Entwurf (default). 100 = offen and 1000 = bezahlt need SEVDESK_ALLOW_BOOKING=true.", {
         enum: ["50", "100", "1000"],
       }),
-      payDate: str("Payment date, dd.mm.yyyy — only with status 1000."),
+      payDate: str("Payment date, dd.mm.yyyy — only with status 1000. Needs SEVDESK_ALLOW_BOOKING=true."),
       positions: {
         type: "array",
         description: "Line items.",
@@ -643,6 +643,17 @@ const createVoucher: ToolDef = {
       throw new Error(`status must be 50 (Entwurf), 100 (offen) or 1000 (bezahlt), not '${statusRaw}'.`);
     }
     const status = statusRaw ?? "50";
+    // Open and paid vouchers are bookable; creating one that way books it.
+    if (
+      ctx.config.allowBooking !== true &&
+      (status !== "50" || optString(args, "payDate") !== undefined || (isPlainObject(args.extra) && "paidAmount" in args.extra))
+    ) {
+      throw new Error(
+        "Refused: status 100 (offen), status 1000 (bezahlt), payDate and paidAmount open or settle a " +
+          "voucher, which is booking. They are off unless the server runs with SEVDESK_ALLOW_BOOKING=true. " +
+          "Create the voucher as a draft (status 50) instead.",
+      );
+    }
     const cdRaw = optString(args, "creditDebit");
     if (cdRaw !== undefined && cdRaw !== "C" && cdRaw !== "D") {
       throw new Error(`creditDebit must be "C" or "D", not "${cdRaw}".`);
