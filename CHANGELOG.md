@@ -1,5 +1,39 @@
 # Changelog
 
+## Unreleased
+
+**Breaking**
+
+- `sevdesk_call` refuses the booking operations (`bookVoucher`,
+  `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
+  `invoiceResetToOpen`, `creditNoteResetToOpen`) unless
+  `SEVDESK_ALLOW_BOOKING=true`, dry runs included. If you book invoice
+  payments through `sevdesk_call`, set the flag.
+  `sevdesk_describe_operation` marks these operations.
+
+**Added**
+
+- `sevdesk_link_transaction` books vouchers against an existing open bank
+  transaction (`bookAmount` with `checkAccountTransaction`), the same as
+  assigning receipts in the sevDesk UI. A split payment is booked in one
+  call (`allocations`). Every voucher and the total are checked before the
+  first booking; transactions that are already partly linked are refused,
+  because the API does not report what is left on them.
+- `sevdesk_reset_voucher_to_open` removes all payments from a voucher. It is
+  marked destructive. Both tools refuse foreign-currency vouchers.
+- `SEVDESK_ALLOW_BOOKING` (default `false`): the two booking tools are hidden
+  and refused without it.
+- `sevdesk_create_voucher` takes `accountDatevId` per position, the booking
+  account on sevdesk-Update 2.0.
+- Voucher status 750 is reported as `teilbezahlt`.
+
+**Changed**
+
+- `sevdesk_create_voucher` returns a compact summary of the saved voucher
+  instead of sevDesk's full echo.
+
+Thanks to @TheOriginal92 (#7).
+
 ## 0.5.0 — 2026-10-19
 
 **Breaking**

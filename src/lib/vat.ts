@@ -228,6 +228,7 @@ const LEGACY_FALLBACK: Record<
 export const VOUCHER_STATUS: Record<string, string> = {
   "50": "Entwurf",
   "100": "offen",
+  "750": "teilbezahlt",
   "1000": "bezahlt",
 };
 
