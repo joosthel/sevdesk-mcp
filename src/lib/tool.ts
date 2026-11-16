@@ -30,14 +30,19 @@ export interface ToolDef {
   };
   /** Declared so clients (and the read-only gate) know before calling. */
   mutating: boolean;
+  /** Irreversible writes (deletes) — sets the MCP destructiveHint. */
+  destructive?: boolean;
   /**
    * Keep the tool listed and callable in read-only mode even though it is
    * declared mutating — for tools that decide per call (sevdesk_call also
    * covers reads; its writes are still refused at the client layer).
    */
   listInReadOnly?: boolean;
-  /** Irreversible writes (deletes) — sets the MCP destructiveHint. */
-  destructive?: boolean;
+  /**
+   * Books or removes payments on vouchers. Hidden and
+   * refused unless SEVDESK_ALLOW_BOOKING=true.
+   */
+  booking?: boolean;
   handler: (args: Record<string, unknown>, ctx: ToolContext) => Promise<unknown>;
 }
 

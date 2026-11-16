@@ -1,4 +1,7 @@
 import {
+  BODY_DEPENDENT_BOOKING_OPERATIONS,
+  bookingField,
+  bookingReason,
   briefOperation,
   catalog,
   describeOperation,
@@ -100,6 +103,10 @@ const callOperation: ToolDef = {
     "SEVDESK_DRY_RUN=true or `dryRun` is passed. Operations with a `preventSendBy` query " +
     "parameter (the *GetPdf reads) default it to true so a read does not mark the document as sent. " +
     "GETs that change state (sendByWithRender, enshrine flags, preventSendBy=false) count as writes. " +
+    "Booking operations (bookVoucher, bookInvoice, bookCreditNote, their resetToOpen and resetToDraft, " +
+    "createPrivateTransactionRule) and writes that set a transaction status or move a voucher out of " +
+    "draft or mark it paid (updateCheckAccountTransaction, updateVoucher, voucherFactorySaveVoucher) are " +
+    "refused unless SEVDESK_ALLOW_BOOKING=true; prefer sevdesk_link_transaction for vouchers. " +
     "Can call DELETE operations, which are irreversible.",
   mutating: true,
   destructive: true, // conservatively declared; the handler checks per operation
@@ -136,6 +143,29 @@ const callOperation: ToolDef = {
     const body = emptyBody ? undefined : args.body;
 
     if (op.mutating && ctx.config.readOnly) throw new ReadOnlyError(op.operationId);
+    // The booking rules inspect the body as an object; a string would slip past them.
+    if (op.mutating && body !== undefined && body !== null && (typeof body !== "object" || Array.isArray(body))) {
+      throw new Error(`Refused: the body of ${op.operationId} must be a JSON object.`);
+    }
+    let reason = ctx.config.allowBooking === true ? null : bookingReason(op, body);
+    // Non-path params go to the query string, and sevDesk reads fields from it
+    // on writes too, so `status` there would bypass the body rules.
+    if (!reason && ctx.config.allowBooking !== true && op.mutating) {
+      const pathNames = new Set(op.params.filter((p) => p.in === "path").map((p) => p.name));
+      const extra = Object.keys(params).filter((k) => !pathNames.has(k));
+      const field = bookingField(op, Object.fromEntries(extra.map((k) => [k, params[k]])));
+      if (field) {
+        reason = `sets ${field} in the query string, which records a payment or marks a document paid`;
+      } else if (extra.length && BODY_DEPENDENT_BOOKING_OPERATIONS.has(op.operationId)) {
+        reason = `takes its fields in the body; query parameters (${extra.join(", ")}) could set a booking status`;
+      }
+    }
+    if (reason) {
+      throw new Error(
+        `Refused: ${op.operationId} ${reason}. Booking is off unless the server runs with ` +
+          "SEVDESK_ALLOW_BOOKING=true.",
+      );
+    }
 
     const pathParamNames = new Set(
       op.params.filter((p) => p.in === "path").map((p) => p.name),
@@ -168,6 +198,20 @@ const callOperation: ToolDef = {
     const query: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(params)) {
       if (!pathParamNames.has(k)) query[k] = v;
+    }
+
+    // sevDesk answers HTTP 400 to a `limit` that is not an integer from 1 to
+    // 1000 (tech.sevdesk.com, 2025-03-11 "API pagination limits"). Refuse it
+    // here with the same rule instead of spending a request on the error.
+    if (query.limit !== undefined && query.limit !== null) {
+      const raw = query.limit;
+      const n = typeof raw === "number" ? raw : /^\d+$/.test(String(raw)) ? Number(raw) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 1000) {
+        throw new Error(
+          `Refused: limit must be an integer from 1 to 1000 (sevDesk rejects anything else with HTTP 400). ` +
+            "Page through larger collections with limit and offset.",
+        );
+      }
     }
 
     // Some GETs change state, and the catalog calls every GET a read. Without

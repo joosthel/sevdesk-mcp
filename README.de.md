@@ -4,7 +4,7 @@
 
 **Der vollständige MCP-Server für [sevDesk](https://sevdesk.de): jeder API-Endpunkt, abgesicherte Schreibzugriffe und eine eingebaute Buchhaltungsprüfung.**
 
-Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege und Rechnungen auflisten und anlegen, Banktransaktionen abgleichen, alle 151 API-Operationen erreichen — und Prüfungen laufen lassen, die wissen, wie eine *falsche* Buchung aussieht: ein ausländischer Lieferant als inländische 0 % statt Reverse Charge §13b, eine Steuerregel, die das Buchungskonto nicht erlaubt, eine Zahlung ohne Beleg dahinter.
+Verbinde Claude (oder jeden anderen MCP-Client) mit deinem sevDesk-Konto: Belege und Rechnungen auflisten und anlegen, Banktransaktionen abgleichen, alle 154 API-Operationen erreichen — und Prüfungen laufen lassen, die wissen, wie eine *falsche* Buchung aussieht: ein ausländischer Lieferant als inländische 0 % statt Reverse Charge §13b, eine Steuerregel, die das Buchungskonto nicht erlaubt, eine Zahlung ohne Beleg dahinter.
 
 > **Status: v0.5.0.** Gegen ein echtes sevDesk-Konto validiert (Buchhaltungssystem 2.0) — wo die Prüfung genau die Klasse von Fehlbuchungen fand, für die sie gebaut wurde. Siehe [CHANGELOG.md](CHANGELOG.md).
 
@@ -77,7 +77,7 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 ## Tools
 
-**24 Tools decken alle 151 API-Operationen ab.**
+**30 Tools decken alle 154 API-Operationen ab** (26 ohne `SEVDESK_ALLOW_BOOKING`).
 
 ### Prüfung
 
@@ -95,13 +95,26 @@ Sobald du dem Setup vertraust: `SEVDESK_READ_ONLY` auf `"false"` setzen und den 
 
 `sevdesk_ping` · `sevdesk_summarize` · `sevdesk_list_vouchers` · `sevdesk_get_voucher` · `sevdesk_list_invoices` · `sevdesk_list_contacts` · `sevdesk_list_transactions` · `sevdesk_receipt_guidance` · `sevdesk_upload_voucher_file` · `sevdesk_create_voucher` · `sevdesk_set_tax_rule` · `sevdesk_create_invoice` · `sevdesk_get_invoice_pdf` · `sevdesk_mark_invoice_sent`
 
+**Buchen** (nur mit `SEVDESK_ALLOW_BOOKING=true`): `sevdesk_link_transaction` bucht Belege auf einen bestehenden Bankumsatz, wie das Zuordnen in der sevDesk-Oberfläche; eine Sammelzahlung geht in einem Aufruf. `sevdesk_reset_voucher_to_open` entfernt alle Zahlungen eines Belegs wieder. Auch `sevdesk_delete_voucher` und `sevdesk_set_transaction_private` (siehe Aufräumen) sind Buchungs-Tools, und `sevdesk_update_draft_voucher` nimmt `finalize` nur mit dem Flag an. `sevdesk_create_voucher` nimmt Status 100 (offen), 1000 (bezahlt), `payDate` und `paidAmount` nur mit dem Flag an; sonst entstehen Entwürfe. Mit dem Flag kann `sevdesk_call` auch Zahlungen auf Rechnungen und Gutschriften buchen (`bookInvoice`, `bookCreditNote`); ohne werden diese und die übrigen Buchungs-Operationen verweigert.
+
 Highlights: `sevdesk_summarize` aggregiert Rechnungen oder Belege serverseitig — Anzahl und Netto-/Steuer-/Brutto-Summen, gruppiert nach Monat, Status oder Kontakt — Fragen wie „Umsatz in Q2“ oder „Ausgaben je Lieferant“ kosten damit ein paar hundert Tokens, egal wie groß das Buchungsjournal ist. `sevdesk_receipt_guidance` beantwortet „welche Kombinationen aus Buchungskonto, Steuerregel und Steuersatz akzeptiert sevDesk tatsächlich" aus sevDesks eigener Validierungstabelle. `sevdesk_set_tax_rule` bucht einen Beleg-Entwurf mit Leitplanken auf eine andere Steuerregel um. `sevdesk_create_invoice` erstellt immer **Entwürfe** — nichts erreicht einen Kunden ohne Review. `sevdesk_get_invoice_pdf` speichert das gerenderte PDF, ohne den Versandstatus der Rechnung anzufassen.
+
+### Aufräumen
+
+| Tool | Was es tut |
+|---|---|
+| `sevdesk_delete_voucher` | Löscht einen Beleg-Entwurf (Status 50) ohne Zahlungen, z. B. ein Duplikat; meldet, was gelöscht wurde. Braucht `SEVDESK_ALLOW_BOOKING` |
+| `sevdesk_set_transaction_private` | Markiert eine offene Banktransaktion (Status 100) als privat (300); sevDesk bucht sie als Privatentnahme oder Privateinlage. Braucht `SEVDESK_ALLOW_BOOKING` |
+| `sevdesk_upload_voucher_file_content` | Lädt einen Beleg hoch, der inline als Base64 kommt (PDF/PNG/JPG oder XML-E-Rechnung, am Inhalt geprüft, max. 10 MB) — für gehostete Clients ohne Dateisystem |
+| `sevdesk_update_draft_voucher` | Korrigiert einen Entwurf: Datum, Belegnummer, Lieferant, Steuerregel, Positionen (Betrag, Satz, Buchungskonto); `finalize` setzt ihn auf offen (100) und braucht `SEVDESK_ALLOW_BOOKING`. Eine neue Steuerregel wird gegen die Seite des Belegs und die Steuersätze der Positionen geprüft |
+
+Alle vier verweigern festgeschriebene Objekte, akzeptieren `dryRun` und lesen das Objekt danach zur Kontrolle erneut. Sie gibt es, damit Routine-Aufräumarbeiten nicht das generische `sevdesk_call` brauchen, das den Zustand eines Objekts nicht kennt. Um einen Beleg als bezahlt zu markieren, verknüpfst du ihn mit `sevdesk_link_transaction` mit seinem Bankumsatz; das Tool nimmt je Beleg ein optionales `type` (`CB` für Skonto, `MTC` für Bankgebühren, `O` für sonstige Abzüge) und warnt, wenn der Banktext den Lieferanten nicht nennt.
 
 ### Vollständige Abdeckung
 
 `sevdesk_list_operations` · `sevdesk_describe_operation` · `sevdesk_call`
 
-Statt 151 Tools zu registrieren und die Tool-Liste des Clients zu fluten, liefert der Server einen durchsuchbaren Katalog, der aus sevDesks OpenAPI-Dokument generiert wird. Suchen, Signatur lesen, aufrufen — jeder Endpunkt ist erreichbar.
+Statt 154 Tools zu registrieren und die Tool-Liste des Clients zu fluten, liefert der Server einen durchsuchbaren Katalog, der aus sevDesks OpenAPI-Dokument generiert wird. Suchen, Signatur lesen, aufrufen — jeder Endpunkt ist erreichbar.
 
 ## Typische Arbeitsabläufe
 
@@ -139,6 +152,7 @@ des Servers und die Tool-Beschreibungen tragen das Wesentliche.
 | `SEVDESK_TIMEOUT_MS` | `30000` | Timeout pro Anfrage (ganze Zahl > 0) |
 | `SEVDESK_MAX_RETRIES` | `3` | Ganze Zahl >= 0; `0` heißt: gar keine Wiederholungen. Wiederholungen mit gejittertem Backoff und begrenztem `Retry-After`. Ein 429 wird immer wiederholt (der gedrosselte Aufruf lief nie); ein 5xx oder Netzwerkfehler nur bei **Lesezugriffen** — ein Schreibzugriff wird bei unklarem Ausgang nie erneut gesendet, ein Timeout kann also keinen doppelten Entwurf erzeugen |
 | `SEVDESK_RATE_LIMIT` | `4` | Clientseitige Drosselung in Requests/Sekunde (Token-Bucket), damit Audit-Abfragesalven nicht mit sevDesks Limit kollidieren. `0` deaktiviert |
+| `SEVDESK_ALLOW_BOOKING` | `false` | Boolean, gleiche Werte. Listet die Buchungs-Tools (`sevdesk_link_transaction`, `sevdesk_reset_voucher_to_open`, `sevdesk_delete_voucher`, `sevdesk_set_transaction_private`), die Zahlungen buchen und entfernen oder löschen und umklassifizieren, erlaubt `finalize` bei `sevdesk_update_draft_voucher` erlaubt Status 100/1000, `payDate` und `paidAmount` bei `sevdesk_create_voucher` und erlaubt `sevdesk_call` die Buchungs-Operationen (`bookVoucher`, `bookInvoice`, `bookCreditNote`, ihre `*ResetToOpen` und `*ResetToDraft`, `createPrivateTransactionRule`) und die allgemeinen Schreibzugriffe, die buchen (siehe Schreibsicherheit). Im Nur-Lesen-Modus wirkungslos |
 | `SEVDESK_DEBUG` | `false` | Boolean, gleiche Werte. Loggt `METHOD /pfad -> status` auf stderr — nie Query-Strings, Bodies oder den Token |
 
 Diese Variablen gehören in den `env`-Block deines MCP-Clients — das ist der
@@ -162,7 +176,9 @@ Der Nur-Lesen-Modus greift dreifach: Schreib-Tools verschwinden aus der Tool-Lis
 
 - Jedes Schreib-Tool akzeptiert ein `dryRun` pro Aufruf und beachtet das globale `SEVDESK_DRY_RUN`.
 - `sevdesk_create_voucher` und `sevdesk_create_invoice` erstellen **Entwürfe** — nichts wird stillschweigend gebucht oder versendet.
+- Zahlungen buchen ist ein eigenes Opt-in: Ohne `SEVDESK_ALLOW_BOOKING=true` sind die Buchungs-Tools ausgeblendet und werden verweigert, und `sevdesk_call` verweigert die zehn Buchungs-Operationen (`bookVoucher`, `bookInvoice`, `bookCreditNote`, ihre `*ResetToOpen` und `*ResetToDraft`, `createPrivateTransactionRule`) und Schreibzugriffe, deren Body bucht: `updateCheckAccountTransaction` mit `status`, `updateVoucher` mit einem `status` außer 50, `paidAmount` oder `payDate` `voucherFactorySaveVoucher` mit demselben in `voucher`, `createTransaction` mit einem Status außer 100 sowie jeder Schreibzugriff, der irgendwo in Body oder Query `paidAmount`, `payDate` oder eine Umbuchungs-Verknüpfung enthält oder eine Rechnung, Gutschrift oder einen Beleg auf 750 (teilbezahlt) oder 1000 (bezahlt) setzt, auch als Dry Run. `sevdesk_create_voucher` verweigert Status 100/1000, `payDate` und `paidAmount`, und `sevdesk_update_draft_voucher` verweigert `finalize`. `sevdesk_link_transaction` nimmt nur offene Bankumsätze und prüft jeden Beleg und die Summe vor der ersten Buchung. `sevdesk_reset_voucher_to_open` ist als destruktiv markiert. Beide verweigern Fremdwährungsbelege. `sevdesk_delete_voucher` und `sevdesk_set_transaction_private` sind ebenfalls Buchungs-Tools.
 - `sevdesk_set_tax_rule` und `sevdesk_mark_invoice_sent` verweigern festgeschriebene Dokumente und verifizieren ihre Änderung durch erneutes Lesen.
+- Die Aufräum-Tools prüfen vor jedem Schreiben den Status (nur Entwürfe werden gelöscht oder korrigiert, nur offene Transaktionen privat gesetzt) und verweigern festgeschriebene Objekte. `sevdesk_delete_voucher` ist das einzige Tool, das sich nicht rückgängig machen lässt; es trägt den MCP-`destructiveHint`.
 - Es gibt bewusst **kein E-Mail-Versand-Tool**, und `sevdesk_get_invoice_pdf` überschreibt niemals eine bestehende Datei.
 - **Gebuchte und bezahlte Belege sind bewusst vom API-Umbuchen ausgenommen.** Die sevDesk-API ändert nur Entwürfe, und das Zurücksetzen eines bezahlten Fremdwährungsbelegs rechnet dessen EUR-Beträge zum heutigen Kurs neu — historische Werte ändern sich stillschweigend. Gebuchte Belege korrigierst du in der sevDesk-Oberfläche, wo die Originalbeträge neben dem Beleg sichtbar bleiben.
 

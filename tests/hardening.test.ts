@@ -1,4 +1,5 @@
 /** Input-validation and transport guards: each one closes a way for a fallible caller to do harm. */
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, join } from "node:path";
@@ -137,8 +138,28 @@ describe("assertAllowedPath", () => {
 });
 
 describe("annotations and output cap", () => {
-  it("only sevdesk_call is destructive", () => {
-    expect(tools.filter((t) => t.destructive).map((t) => t.name)).toEqual(["sevdesk_call"]);
+  it("only sevdesk_call, the draft delete and the payment reset are destructive", () => {
+    expect(tools.filter((t) => t.destructive).map((t) => t.name).sort()).toEqual([
+      "sevdesk_call",
+      "sevdesk_delete_voucher",
+      "sevdesk_reset_voucher_to_open",
+    ]);
+  });
+
+  it("marks exactly the payment tools as booking tools", () => {
+    expect(tools.filter((t) => t.booking).map((t) => t.name).sort()).toEqual([
+      "sevdesk_delete_voucher",
+      "sevdesk_link_transaction",
+      "sevdesk_reset_voucher_to_open",
+      "sevdesk_set_transaction_private",
+    ]);
+    expect(tools.filter((t) => t.booking).every((t) => t.mutating)).toBe(true);
+  });
+
+  it("parses SEVDESK_ALLOW_BOOKING strictly and defaults to off", () => {
+    expect(loadConfig(env({})).allowBooking).toBe(false);
+    expect(loadConfig(env({ SEVDESK_ALLOW_BOOKING: "true" })).allowBooking).toBe(true);
+    expect(() => loadConfig(env({ SEVDESK_ALLOW_BOOKING: "maybe" }))).toThrow(/SEVDESK_ALLOW_BOOKING/);
   });
 
   it("truncates oversized output with a final notice", () => {
@@ -322,6 +343,24 @@ describe("sevdesk_call body and preventSendBy edge cases", () => {
     }
     expect(sent.map((s) => s.query?.preventSendBy)).toEqual([true, true, true, true]);
     expect(sent.every((s) => s.mutating === false)).toBe(true);
+  });
+
+  it("refuses a limit outside 1..1000 before sending (sevDesk answers 400, 2025-03-11 change)", async () => {
+    const { ctx: c, sent } = ctx();
+    for (const limit of [0, -1, 1001, 10000, 1.5, "abc", "1e3", ""]) {
+      await expect(
+        call.handler({ operationId: "getInvoices", params: { limit } }, c),
+      ).rejects.toThrow(/limit must be an integer from 1 to 1000/);
+    }
+    expect(sent).toHaveLength(0);
+    for (const limit of [1, 1000, "50"]) {
+      await call.handler({ operationId: "getInvoices", params: { limit } }, c);
+    }
+    expect(sent).toHaveLength(3);
+  });
+
+  it("the bundled spec no longer documents thumbs for render responses (2026-04-07 change)", () => {
+    expect(readFileSync(new URL("../openapi/sevdesk-openapi.yaml", import.meta.url), "utf8")).not.toMatch(/^\s+thumbs:/m);
   });
 
   it("passes mutating=true to the client for state-changing GETs", async () => {
@@ -761,7 +800,7 @@ describe("round 6", () => {
   });
 
   it("create_voucher accepts only status 50/100/1000", async () => {
-    const c = { client: {}, config: { readOnly: false, dryRun: true } } as unknown as ToolContext;
+    const c = { client: {}, config: { readOnly: false, dryRun: true, allowBooking: true } } as unknown as ToolContext;
     const a = { supplierName: "A", voucherDate: "01.09.2026", taxRuleId: "9", positions: [{ sumNet: 1, taxRate: 19 }] };
     for (const bad of ["75", "draft", 1]) {
       await expect(tool("sevdesk_create_voucher").handler({ ...a, status: bad }, c)).rejects.toThrow(/status must be/);

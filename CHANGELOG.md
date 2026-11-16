@@ -1,5 +1,89 @@
 # Changelog
 
+## Unreleased
+
+**Breaking**
+
+- `sevdesk_create_voucher` refuses status 100 (open) and 1000 (paid),
+  `payDate` and `paidAmount` unless `SEVDESK_ALLOW_BOOKING=true`, dry runs
+  included. The default (status 50, draft) is unchanged. Create the voucher
+  as a draft, or set the flag.
+- `sevdesk_call` also refuses `voucherResetToDraft`, `invoiceResetToDraft`,
+  `creditNoteResetToDraft` and `createPrivateTransactionRule`, and the
+  generic writes that book: `updateCheckAccountTransaction` with a `status`,
+  `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`,
+  `voucherFactorySaveVoucher` with the same on `voucher`, `createTransaction`
+  with a status other than 100, and any write whose body or query carries
+  `paidAmount`, `payDate` or a transfer link, or sets an invoice, credit
+  note or voucher to 750 (partly paid) or 1000 (paid). Array and string bodies on
+  writes are refused. `sevdesk_describe_operation` says so.
+- `sevdesk_call` refuses the booking operations (`bookVoucher`,
+  `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
+  `invoiceResetToOpen`, `creditNoteResetToOpen`, and
+  `createPrivateTransactionRule`, which marks future transactions private) unless
+  `SEVDESK_ALLOW_BOOKING=true`, dry runs included. If you book invoice
+  payments through `sevdesk_call`, set the flag.
+  `sevdesk_describe_operation` marks these operations.
+
+**Added**
+
+- `sevdesk_link_transaction` books vouchers against an existing open bank
+  transaction (`bookAmount` with `checkAccountTransaction`), the same as
+  assigning receipts in the sevDesk UI. A split payment is booked in one
+  call (`allocations`). Every voucher and the total are checked before the
+  first booking; transactions that are already partly linked are refused,
+  because the API does not report what is left on them.
+- `sevdesk_reset_voucher_to_open` removes all payments from a voucher. It is
+  marked destructive. Both tools refuse foreign-currency vouchers.
+- `SEVDESK_ALLOW_BOOKING` (default `false`): the booking tools are hidden
+  and refused without it.
+- `sevdesk_create_voucher` takes `accountDatevId` per position, the booking
+  account on sevdesk-Update 2.0.
+- Voucher status 750 is reported as `teilbezahlt`.
+- Ledger-cleanup tools, each with a status check before the write, a
+  refusal for enshrined objects, `dryRun`, and a read-back afterwards:
+  `sevdesk_delete_voucher` (drafts without payments only),
+  `sevdesk_set_transaction_private` (open transactions only),
+  `sevdesk_upload_voucher_file_content` (base64 upload for hosted clients,
+  PDF, PNG, JPG or XML e-invoice checked by content, 10 MB cap, returns only
+  the filename token) and `sevdesk_update_draft_voucher` (date, number,
+  supplier, tax rule, positions). Observed live and encoded: `DELETE
+  /Voucher/{id}` works although the OpenAPI document omits it, and an
+  open voucher needs `accountDatev` on every position (422 "Valid
+  accountDatev must be given" otherwise). The delete and mark-private tools
+  are booking tools: hidden and refused without `SEVDESK_ALLOW_BOOKING`,
+  and `finalize` on `sevdesk_update_draft_voucher` is refused without it.
+  A new tax rule is checked against the voucher's side and its position
+  rates, and kept positions are re-sent as they were entered (net or gross).
+- `sevdesk_link_transaction` takes an optional `type` per voucher: `N`
+  (default), `CB` (Skonto), `MTC` (bank charges) or `O` (other reason). `CB`,
+  `MTC` and `O` need an amount below the open amount, at most 10 % below,
+  and settle the voucher.
+  It also returns `warnings` (dry run and result) when the bank text does
+  not mention the supplier, and a `verified` flag from the read-back.
+- `ToolDef.destructive` sets the MCP `destructiveHint` per tool instead of
+  `false` for all.
+
+**Changed**
+
+- `sevdesk_link_transaction` books every payment as type `N`. Expense
+  payments were sent as `FULL_PAYMENT`, which sevDesk refuses for money out.
+  `N` settles the voucher when the amount is its open amount.
+- `sevdesk_reset_voucher_to_open`: a transaction becomes open again only once
+  every voucher on it is reset.
+- The bundled OpenAPI spec is sevDesk's current one. `render`,
+  `changeParameter` and `sendByWithRender` now document the full PDF
+  (Base64 `pdf`) instead of `thumbs`/`pages` (sevDesk change of 2026-04-07),
+  and the PrivateTransactionRule operations are in the catalog.
+- `sevdesk_call` refuses a `limit` that is not an integer from 1 to 1000;
+  sevDesk answers such requests with HTTP 400 since 2025-05-30.
+- `exportDatevDepricated` (`/Export/datevCSV`) is flagged as removed by
+  sevDesk (2025-05-30); use `exportDatevCSV`.
+- `sevdesk_create_voucher` returns a compact summary of the saved voucher
+  instead of sevDesk's full echo.
+
+Thanks to @TheOriginal92 (#7) and @aluedeke (#3).
+
 ## 0.5.0 — 2026-10-19
 
 **Breaking**

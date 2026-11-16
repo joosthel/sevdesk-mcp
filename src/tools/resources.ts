@@ -25,6 +25,7 @@ import {
   obj,
   optId,
   optLimit,
+  optNumber,
   optRuleId,
   optString,
   positionObjects,
@@ -41,14 +42,16 @@ const VOUCHER_RULE_IDS = Object.entries(TAX_RULES)
   .map(([id]) => id as TaxRuleId);
 
 /** Fetch a single document and refuse to hand it out for editing when it is enshrined. */
-async function fetchUnenshrined(
+export async function fetchUnenshrined(
   ctx: ToolContext,
   type: "Voucher" | "Invoice",
   id: string,
+  query?: Record<string, unknown>,
 ): Promise<Row> {
   const { data } = await ctx.client.request<{ objects?: Row[] }>({
     method: "GET",
     path: `/${type}/${encodeURIComponent(id)}`,
+    query,
   });
   const doc = data?.objects?.[0];
   if (!doc) throw new Error(`No ${type.toLowerCase()} with id ${id}.`);
@@ -58,7 +61,7 @@ async function fetchUnenshrined(
   return doc;
 }
 
-type Row = Record<string, unknown>;
+export type Row = Record<string, unknown>;
 
 function period(args: Record<string, unknown>): { from?: Date; to?: Date } {
   const f = optString(args, "from");
@@ -107,6 +110,9 @@ const ping: ToolDef = {
       baseUrl: ctx.config.baseUrl,
       bookkeepingSystemVersion: version,
       mode: ctx.config.readOnly ? "READ-ONLY" : ctx.config.dryRun ? "DRY-RUN" : "read/write",
+      bookingTools: !ctx.config.readOnly && ctx.config.allowBooking === true
+        ? "enabled"
+        : "off (SEVDESK_ALLOW_BOOKING not set)",
       receiptDirsAllowed: ctx.config.allowedReceiptDirs.length
         ? ctx.config.allowedReceiptDirs
         : "file tools disabled (SEVDESK_RECEIPT_DIRS not set)",
@@ -127,7 +133,7 @@ const listVouchers: ToolDef = {
       from: str("Start date, dd.mm.yyyy or yyyy-mm-dd."),
       to: str("End date, dd.mm.yyyy or yyyy-mm-dd."),
       supplier: str("Case-insensitive substring of the supplier name."),
-      status: str("Filter by status.", { enum: ["Entwurf", "offen", "bezahlt"] }),
+      status: str("Filter by status.", { enum: ["Entwurf", "offen", "teilbezahlt", "bezahlt"] }),
       limit: int("Maximum rows to return (default 200).", { minimum: 1, maximum: 1000 }),
       maxItems: int("Fetch cap: how many records are read from sevDesk before filtering (default 2000).", { minimum: 1, maximum: 20000 }),
     },
@@ -598,10 +604,10 @@ const createVoucher: ToolDef = {
         { enum: VOUCHER_RULE_IDS },
       ),
       creditDebit: str("C = credit, D = debit.", { enum: ["C", "D"] }),
-      status: str("50 = Entwurf, 100 = offen, 1000 = bezahlt (default 50).", {
+      status: str("50 = Entwurf (default). 100 = offen and 1000 = bezahlt need SEVDESK_ALLOW_BOOKING=true.", {
         enum: ["50", "100", "1000"],
       }),
-      payDate: str("Payment date, dd.mm.yyyy — only with status 1000."),
+      payDate: str("Payment date, dd.mm.yyyy — only with status 1000. Needs SEVDESK_ALLOW_BOOKING=true."),
       positions: {
         type: "array",
         description: "Line items.",
@@ -612,7 +618,12 @@ const createVoucher: ToolDef = {
             sumGross: { type: "number", description: "Gross amount of the position." },
             taxRate: { type: "number", description: "VAT rate in percent, e.g. 19 or 0." },
             comment: { type: "string", description: "Free-text description." },
-            accountingTypeId: { type: "string", description: "sevDesk accounting type id." },
+            accountingTypeId: { type: "string", description: "sevDesk accounting type id (legacy bookkeeping only)." },
+            accountDatevId: {
+              type: "string",
+              description:
+                "Booking account id for sevdesk-Update 2.0 (accountDatevId from sevdesk_receipt_guidance). Replaces accountingTypeId.",
+            },
           },
         },
       },
@@ -632,6 +643,17 @@ const createVoucher: ToolDef = {
       throw new Error(`status must be 50 (Entwurf), 100 (offen) or 1000 (bezahlt), not '${statusRaw}'.`);
     }
     const status = statusRaw ?? "50";
+    // Open and paid vouchers are bookable; creating one that way books it.
+    if (
+      ctx.config.allowBooking !== true &&
+      (status !== "50" || optString(args, "payDate") !== undefined || (isPlainObject(args.extra) && ("paidAmount" in args.extra || "payDate" in args.extra)))
+    ) {
+      throw new Error(
+        "Refused: status 100 (offen), status 1000 (bezahlt), payDate and paidAmount open or settle a " +
+          "voucher, which is booking. They are off unless the server runs with SEVDESK_ALLOW_BOOKING=true. " +
+          "Create the voucher as a draft (status 50) instead.",
+      );
+    }
     const cdRaw = optString(args, "creditDebit");
     if (cdRaw !== undefined && cdRaw !== "C" && cdRaw !== "D") {
       throw new Error(`creditDebit must be "C" or "D", not "${cdRaw}".`);
@@ -716,10 +738,12 @@ const createVoucher: ToolDef = {
       }
       const hasNet = given(p.sumNet);
       const accountingTypeId = optId(p, "accountingTypeId");
+      const accountDatevId = optId(p, "accountDatevId");
       return {
         objectName: "VoucherPos",
         mapAll: true,
         accountingType: accountingTypeId ? { id: accountingTypeId, objectName: "AccountingType" } : undefined,
+        accountDatev: accountDatevId ? { id: accountDatevId, objectName: "AccountDatev" } : undefined,
         taxRate: p.taxRate,
         net: hasNet,
         sumNet: hasNet ? sum : undefined,
@@ -750,7 +774,34 @@ const createVoucher: ToolDef = {
       body: payload,
       mutating: true,
     });
-    return { created: true, statusUsed: status, response: data };
+    // sevDesk echoes the full voucher with the whole sevClient (bank data, tax
+    // number, settings) embedded twice — thousands of tokens. Hand back what a
+    // caller needs to continue.
+    const objects = (data as Row | undefined)?.objects as Row | undefined;
+    const saved = objects?.voucher as Row | undefined;
+    if (!saved) return { created: true, statusUsed: status, response: data };
+    const posOut = Array.isArray(objects?.voucherPos) ? (objects.voucherPos as Row[]) : [];
+    return {
+      created: true,
+      statusUsed: status,
+      voucher: {
+        id: String(saved.id ?? ""),
+        status: VOUCHER_STATUS[String(saved.status)] ?? String(saved.status ?? ""),
+        voucherDate: saved.voucherDate ?? null,
+        supplierName: saved.supplierName ?? null,
+        description: saved.description ?? null,
+        sumGross: round2(num(saved.sumGross)),
+        taxRule: (saved.taxRule as Row | undefined)?.id ?? null,
+        documentId: (saved.document as Row | undefined)?.id ?? null,
+      },
+      positions: posOut.map((p) => ({
+        id: String(p.id ?? ""),
+        accountDatevId: (p.accountDatev as Row | undefined)?.id ?? null,
+        accountingTypeId: (p.accountingType as Row | undefined)?.id ?? null,
+        sumGross: round2(num(p.sumGross)),
+        comment: p.comment ?? null,
+      })),
+    };
   },
 };
 
@@ -822,6 +873,49 @@ const receiptGuidance: ToolDef = {
   },
 };
 
+/** The tax rule, if sevDesk accepts it on vouchers; throws otherwise. */
+export function usableVoucherRule(target: string): (typeof TAX_RULES)[TaxRuleId] {
+  if (!VOUCHER_RULE_IDS.includes(target as TaxRuleId)) {
+    throw new Error(
+      `taxRule '${target}' cannot be used on vouchers. Usable rules: ${VOUCHER_RULE_IDS.join(", ")}.`,
+    );
+  }
+  return TAX_RULES[target as TaxRuleId];
+}
+
+/**
+ * The rule must come from the voucher's side of the books. With
+ * `positionRates` every rate must also be one the rule allows (1-based in the
+ * message). sevdesk_set_tax_rule leaves rates alone ("the positions keep their
+ * rates"); tools that re-send positions pass them.
+ */
+export function assertRuleFitsVoucher(
+  target: string,
+  voucher: Row,
+  id: string,
+  positionRates?: readonly number[],
+): void {
+  const rule = usableVoucherRule(target);
+  const side = voucherSide(voucher) ?? rule.side;
+  if (side !== rule.side) {
+    throw new Error(
+      `taxRule ${target} ("${rule.label}") is a ${rule.side} rule but voucher ${id} is ` +
+        `${side === "expense" ? "an expense" : "a revenue"} document.`,
+    );
+  }
+  const allowed = rule.allowedRates as readonly number[] | null;
+  if (allowed && positionRates) {
+    positionRates.forEach((rate, i) => {
+      if (!allowed.includes(rate)) {
+        throw new Error(
+          `taxRule ${target} ("${rule.label}") allows only ${allowed.join(", ")} %, but position ${i + 1} ` +
+            `has ${rate} %.`,
+        );
+      }
+    });
+  }
+}
+
 const setTaxRule: ToolDef = {
   name: "sevdesk_set_tax_rule",
   title: "Change a voucher's tax rule",
@@ -847,12 +941,7 @@ const setTaxRule: ToolDef = {
   async handler(args, ctx) {
     const id = requireId(args, "voucherId");
     const target = (optRuleId(args) ?? requireString(args, "taxRuleId")) as TaxRuleId;
-    if (!VOUCHER_RULE_IDS.includes(target)) {
-      throw new Error(
-        `taxRule '${target}' cannot be used on vouchers. Usable rules: ${VOUCHER_RULE_IDS.join(", ")}.`,
-      );
-    }
-    const rule = TAX_RULES[target];
+    const rule = usableVoucherRule(target);
 
     const v = await fetchUnenshrined(ctx, "Voucher", id);
     // Learned on live data: the API only updates drafts, and resetting a paid
@@ -864,13 +953,7 @@ const setTaxRule: ToolDef = {
       );
     }
     const before = readTaxTreatment(v);
-    const side = voucherSide(v) ?? rule.side;
-    if (side !== rule.side) {
-      throw new Error(
-        `taxRule ${target} ("${rule.label}") is a ${rule.side} rule but voucher ${id} is ` +
-          `${side === "expense" ? "an expense" : "a revenue"} document.`,
-      );
-    }
+    assertRuleFitsVoucher(target, v, id);
 
     if (before.ruleId === target) {
       return {
@@ -1175,6 +1258,463 @@ const markInvoiceSent: ToolDef = {
   },
 };
 
+/** sevDesk's CheckAccountTransaction status codes. */
+export const TRANSACTION_STATUS: Record<string, string> = {
+  "100": "offen",
+  "200": "verknüpft",
+  "300": "privat",
+  "350": "automatisch verbucht",
+  "400": "gebucht",
+};
+
+/** Upper bound for vouchers in one split payment. */
+const MAX_ALLOCATIONS = 20;
+
+/**
+ * bookAmount types (spec: Voucher/{id}/bookAmount) this tool sends. N is the
+ * normal booking in both directions. The others book a reduced amount and
+ * settle the voucher: CB = discount (Skonto), MTC = the bank's monetary
+ * traffic costs, O = other reasons. Never sent: FULL_PAYMENT (live: 422 for a
+ * negative amount, i.e. every expense), OF (higher amount, reminder charges;
+ * a booking never exceeds the open amount) and CF (currency fluctuation,
+ * deprecated; only EUR vouchers are booked).
+ */
+export const BOOK_TYPES = ["N", "CB", "MTC", "O"] as const;
+type BookType = (typeof BOOK_TYPES)[number];
+
+/** Largest part of the open amount a reduction type (CB, MTC, O) may write off. */
+const MAX_WRITE_OFF = 0.1;
+
+const REDUCTION_TYPES: readonly BookType[] = ["CB", "MTC", "O"];
+
+const TYPE_HELP =
+  "Booking type, default N (normal payment: the voucher is paid when the amount is its full " +
+  "open amount, else partly paid). CB = reduced amount due to discount (Skonto), MTC = reduced " +
+  "amount due to bank charges (monetary traffic costs), O = reduced amount for other reasons. " +
+  "CB, MTC and O need an amount below the open amount (at most 10 % less) and settle the voucher.";
+
+/** The type booked when the caller gives none. ONE place for the rule. */
+export function defaultBookType(): BookType {
+  return "N";
+}
+
+interface Allocation {
+  voucherId: string;
+  amount?: number;
+  type?: BookType;
+}
+
+function allocationType(src: Record<string, unknown>, at: string): BookType | undefined {
+  const raw = src.type;
+  if (raw === undefined || raw === null || raw === "") return undefined;
+  const t = typeof raw === "string" ? raw.trim().toUpperCase() : raw;
+  if (!BOOK_TYPES.includes(t as BookType)) {
+    throw new Error(`${at}type must be one of ${BOOK_TYPES.join(", ")}.`);
+  }
+  return t as BookType;
+}
+
+/**
+ * Not a refusal (bank texts vary a lot), but worth a second look: the bank
+ * text names neither the supplier's first word nor anything close to it.
+ */
+function supplierWarning(voucherId: string, voucher: Row, tx: Row): string | undefined {
+  const supplier = String(voucher.supplierName ?? (voucher.supplier as Row | undefined)?.name ?? "").trim();
+  const word = supplier.toLowerCase().match(/[a-zäöüß0-9]{3,}/)?.[0];
+  if (!word) return undefined;
+  const bankText = `${tx.payeePayerName ?? ""} ${tx.paymtPurpose ?? ""}`.toLowerCase();
+  if (bankText.includes(word)) return undefined;
+  return (
+    `Voucher ${voucherId}: the transaction text does not mention "${word}" (supplier ${supplier}). ` +
+    "Check that it is the right payment."
+  );
+}
+
+function allocationAmount(src: Record<string, unknown>, at: string): number | undefined {
+  if (src.amount === undefined || src.amount === null) return undefined;
+  const amount = optNumber(src, "amount");
+  if (amount === undefined) throw new Error(`${at}amount must be a number.`);
+  return amount;
+}
+
+/** "050" and "50" name the same voucher; compare and send the canonical form. */
+function canonicalId(id: string): string {
+  return id.replace(/^0+(?=\d)/, "");
+}
+
+/** One voucher (voucherId + amount) or a split payment (allocations), never both. */
+function allocationsFrom(args: Record<string, unknown>): Allocation[] {
+  const hasList = args.allocations !== undefined && args.allocations !== null;
+  const hasSingle = args.voucherId !== undefined && args.voucherId !== null && args.voucherId !== "";
+  if (hasList === hasSingle) {
+    throw new Error("Give exactly one of voucherId (with an optional amount) or allocations.");
+  }
+  if (hasSingle) {
+    return [
+      {
+        voucherId: canonicalId(requireId(args, "voucherId")),
+        amount: allocationAmount(args, ""),
+        type: allocationType(args, ""),
+      },
+    ];
+  }
+
+  if (args.amount !== undefined && args.amount !== null) {
+    throw new Error("With allocations, give each voucher's amount inside its allocation.");
+  }
+  if (args.type !== undefined && args.type !== null && args.type !== "") {
+    throw new Error("With allocations, give each voucher's type inside its allocation.");
+  }
+  const list = args.allocations;
+  if (!Array.isArray(list) || list.length === 0) {
+    throw new Error("allocations must be a non-empty array of { voucherId, amount? }.");
+  }
+  if (list.length > MAX_ALLOCATIONS) {
+    throw new Error(`At most ${MAX_ALLOCATIONS} vouchers per transaction.`);
+  }
+  const out = list.map((a, i) => {
+    const at = `Allocation ${i + 1}: `;
+    if (!isPlainObject(a)) throw new Error(`${at}must be an object.`);
+    let voucherId: string;
+    try {
+      voucherId = requireId(a, "voucherId");
+    } catch (err) {
+      throw new Error(at + (err instanceof Error ? err.message : String(err)));
+    }
+    return { voucherId: canonicalId(voucherId), amount: allocationAmount(a, at), type: allocationType(a, at) };
+  });
+  const ids = out.map((a) => a.voucherId);
+  const dup = ids.find((id, i) => ids.indexOf(id) !== i);
+  if (dup) throw new Error(`Voucher ${dup} appears twice in allocations.`);
+  return out;
+}
+
+export async function fetchTransaction(ctx: ToolContext, id: string): Promise<Row> {
+  const { data } = await ctx.client.request<{ objects?: Row[] }>({
+    method: "GET",
+    path: `/CheckAccountTransaction/${encodeURIComponent(id)}`,
+  });
+  const tx = data?.objects?.[0];
+  if (!tx) throw new Error(`No bank transaction with id ${id}.`);
+  return tx;
+}
+
+/** A voucher's ISO currency; sevDesk leaves it empty on EUR vouchers. */
+export function voucherCurrency(voucher: Row): string {
+  const c = voucher.currency;
+  return typeof c === "string" && c.trim() ? c.trim().toUpperCase() : "EUR";
+}
+
+export async function fetchVoucher(ctx: ToolContext, id: string): Promise<Row> {
+  const { data } = await ctx.client.request<{ objects?: Row[] }>({
+    method: "GET",
+    path: `/Voucher/${encodeURIComponent(id)}`,
+  });
+  return data?.objects?.[0] ?? {};
+}
+
+const linkTransaction: ToolDef = {
+  name: "sevdesk_link_transaction",
+  title: "Link vouchers to an existing bank transaction",
+  description:
+    "Book one or more vouchers against an EXISTING open bank transaction (PUT " +
+    "/Voucher/{id}/bookAmount with checkAccountTransaction), the same as assigning receipts to " +
+    "the transaction in the sevDesk UI. Date and bank account come from the transaction; each " +
+    "amount defaults to the voucher's open amount; type (optional, per voucher) books a Skonto " +
+    "or other reduced settlement, see type. Split payment (one transaction, several " +
+    "vouchers): pass all of them in ONE call as allocations, because the transaction must still " +
+    "be open (status 100). Once anything is linked to it, sevDesk's API no longer reports how " +
+    "much of it is unassigned, so the tool refuses it. Everything is checked before the first " +
+    "booking: enshrined, draft and paid vouchers, direction (expense vouchers need outgoing " +
+    "money), each voucher's open amount, and that the total does not exceed the transaction. " +
+    "EUR vouchers only. Do not run two link calls for the same transaction in parallel. Undo " +
+    "with sevdesk_reset_voucher_to_open.",
+  mutating: true,
+  booking: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      transactionId: str("Numeric CheckAccountTransaction id (sevdesk_list_transactions)."),
+      voucherId: str("Numeric voucher id, for a single voucher. Use allocations for several."),
+      amount: {
+        type: "number",
+        description: "With voucherId: amount to book (positive). Defaults to the voucher's open amount.",
+      },
+      type: str(`With voucherId: ${TYPE_HELP}`, { enum: [...BOOK_TYPES] }),
+      allocations: {
+        type: "array",
+        description: "Split payment: every voucher this transaction pays, booked in one call.",
+        minItems: 1,
+        maxItems: MAX_ALLOCATIONS,
+        items: {
+          type: "object",
+          properties: {
+            voucherId: str("Numeric voucher id."),
+            amount: {
+              type: "number",
+              description: "Amount to book (positive). Defaults to the voucher's open amount.",
+            },
+            type: str(TYPE_HELP, { enum: [...BOOK_TYPES] }),
+          },
+          required: ["voucherId"],
+          additionalProperties: false,
+        },
+      },
+      dryRun: bool("Preview the requests without sending them."),
+    },
+    required: ["transactionId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const transactionId = requireId(args, "transactionId");
+    const allocations = allocationsFrom(args);
+
+    const tx = await fetchTransaction(ctx, transactionId);
+    if (tx.enshrined) {
+      throw new Error(`Transaction ${transactionId} is enshrined (festgeschrieben) — sevDesk forbids changing it.`);
+    }
+    const txStatus = String(tx.status ?? "");
+    if (txStatus === "200") {
+      throw new Error(
+        `Transaction ${transactionId} is already linked to a voucher or invoice. sevDesk's API does ` +
+          "not report how much of it is still unassigned, so this tool cannot rule out booking more " +
+          "than it holds. Link the rest in the sevDesk UI.",
+      );
+    }
+    if (txStatus !== "100") {
+      throw new Error(
+        `Transaction ${transactionId} is ${TRANSACTION_STATUS[txStatus] ?? `status ${txStatus}`} — ` +
+          "only open transactions can take a voucher.",
+      );
+    }
+    const txAmount = round2(num(tx.amount));
+    if (txAmount === 0) throw new Error(`Transaction ${transactionId} has no amount.`);
+    const incoming = txAmount > 0;
+    const txDate = parseSevdeskDate(tx.valueDate ?? tx.entryDate);
+    if (!txDate) throw new Error(`Transaction ${transactionId} has no date.`);
+    const accountId = String((tx.checkAccount as Row | undefined)?.id ?? "");
+    if (!/^\d+$/.test(accountId)) throw new Error(`Transaction ${transactionId} has no bank account.`);
+    const date = ymd(txDate);
+
+    // Validate every voucher before the first booking, so a refusal never
+    // leaves a split payment half-booked.
+    const planned: Array<{ voucherId: string; amount: number; open: number; type: BookType; path: string; body: Row }> = [];
+    const warnings: string[] = [];
+    for (const a of allocations) {
+      const voucher = await fetchUnenshrined(ctx, "Voucher", a.voucherId, { embed: "supplier" });
+      const status = String(voucher.status ?? "");
+      if (status === "50") {
+        throw new Error(`Voucher ${a.voucherId} is still a draft (Entwurf) — set it to open (100) first.`);
+      }
+      if (status === "1000") throw new Error(`Voucher ${a.voucherId} is already paid.`);
+      const currency = voucherCurrency(voucher);
+      if (currency !== "EUR") {
+        throw new Error(
+          `Voucher ${a.voucherId} is in ${currency}. Link foreign-currency vouchers in the sevDesk UI; ` +
+            "sevdesk_reset_voucher_to_open could not undo it.",
+        );
+      }
+      // Same convention as the audits: a voucher without creditDebit is an expense.
+      const expense = voucher.creditDebit !== "D";
+      if (expense === incoming) {
+        throw new Error(
+          `Direction mismatch: voucher ${a.voucherId} is ${expense ? "an expense" : "revenue"}, but ` +
+            `transaction ${transactionId} is ${incoming ? "incoming" : "outgoing"} money (${txAmount}).`,
+        );
+      }
+      // Never more than the gross amount, even if paidAmount is negative (money returned).
+      const gross = round2(num(voucher.sumGross));
+      const open = round2(Math.min(gross, gross - num(voucher.paidAmount)));
+      if (!(open > 0)) throw new Error(`Voucher ${a.voucherId} has nothing left to pay (open ${open}).`);
+      const amount = round2(a.amount ?? open);
+      if (!(amount > 0)) throw new Error(`Voucher ${a.voucherId}: amount must be positive.`);
+      if (amount > open) {
+        throw new Error(`Voucher ${a.voucherId}: amount ${amount} exceeds its open amount ${open}.`);
+      }
+      const full = amount === open;
+      const type: BookType = a.type ?? defaultBookType();
+      if (REDUCTION_TYPES.includes(type) && full) {
+        throw new Error(
+          `Voucher ${a.voucherId}: type ${type} books a reduced amount, but ${amount} is the full open ` +
+            "amount. Use N, or give an amount below the open amount.",
+        );
+      }
+      if (REDUCTION_TYPES.includes(type)) {
+        // Whole cents, so exactly 10 % is allowed and float noise is not.
+        const writtenOff = Math.round(open * 100) - Math.round(amount * 100);
+        if (writtenOff * 10 > Math.round(open * 100)) {
+          throw new Error(
+            `Voucher ${a.voucherId}: type ${type} would write off ${round2(open - amount)} of ${open}, more than ` +
+              `${MAX_WRITE_OFF * 100} % of the open amount. Book larger differences in the sevDesk UI.`,
+          );
+        }
+      }
+      const warning = supplierWarning(a.voucherId, voucher, tx);
+      if (warning) warnings.push(warning);
+      planned.push({
+        voucherId: a.voucherId,
+        amount,
+        open,
+        type,
+        path: `/Voucher/${encodeURIComponent(a.voucherId)}/bookAmount`,
+        // The amount carries the bank transaction's sign: negative for money
+        // leaving the account (expense), positive for money coming in.
+        // "N" settles the voucher when the amount is its open amount and
+        // leaves it at 750 (teilbezahlt) when it is less; CB / MTC / O settle
+        // a reduced amount.
+        body: {
+          amount: incoming ? amount : -amount,
+          date,
+          type,
+          checkAccount: { id: Number(accountId), objectName: "CheckAccount" },
+          checkAccountTransaction: { id: Number(transactionId), objectName: "CheckAccountTransaction" },
+          createFeed: false,
+        },
+      });
+    }
+
+    const total = round2(planned.reduce((s, p) => s + p.amount, 0));
+    const available = Math.abs(txAmount);
+    if (total > available) {
+      throw new Error(
+        `The vouchers add up to ${total}, more than transaction ${transactionId} holds (${available}).`,
+      );
+    }
+    const unassigned = round2(available - total);
+
+    if (isDryRun(args, ctx)) {
+      return {
+        dryRun: true,
+        transactionId,
+        total,
+        unassigned,
+        warnings,
+        wouldSend: planned.map((p) => ({ method: "PUT", path: p.path, body: p.body })),
+      };
+    }
+
+    const booked: string[] = [];
+    for (const p of planned) {
+      try {
+        await ctx.client.request({ method: "PUT", path: p.path, body: p.body, mutating: true });
+      } catch (err) {
+        // A timeout or 5xx may still have been saved by sevDesk, so the
+        // failed voucher's state is unknown, not "not booked".
+        const reason = (err instanceof Error ? err.message : String(err)).replace(/[.\s]+$/, "");
+        const notAttempted = planned.slice(booked.length + 1).map((q) => q.voucherId);
+        throw new Error(
+          `Booking voucher ${p.voucherId} on transaction ${transactionId} did not confirm (${reason}); ` +
+            "sevDesk may or may not have saved it. " +
+            `Booked before it: ${booked.join(", ") || "none"}. Not attempted: ${notAttempted.join(", ") || "none"}. ` +
+            `Check voucher ${p.voucherId} and transaction ${transactionId} with sevdesk_get_voucher / ` +
+            "sevdesk_list_transactions before retrying.",
+        );
+      }
+      booked.push(p.voucherId);
+    }
+
+    // Read both sides back instead of trusting the PUT responses.
+    const [vouchers, t] = await Promise.all([
+      Promise.all(planned.map((p) => fetchVoucher(ctx, p.voucherId).catch(() => ({}) as Row))),
+      fetchTransaction(ctx, transactionId).catch(() => ({}) as Row),
+    ]);
+    // sevDesk's rule: paid when the full open amount or a reduction type was
+    // booked, else partly paid; the transaction is booked once it is used up.
+    const expectedVoucher = (p: (typeof planned)[number]) =>
+      p.amount === p.open || REDUCTION_TYPES.includes(p.type) ? "1000" : "750";
+    const expectedTransaction = unassigned === 0 ? "400" : "200";
+    const verified =
+      String(t.status) === expectedTransaction &&
+      planned.every((p, i) => String(vouchers[i]?.status) === expectedVoucher(p));
+    return {
+      linked: true,
+      verified,
+      transactionId,
+      date,
+      total,
+      unassigned,
+      warnings,
+      transaction: { status: TRANSACTION_STATUS[String(t.status)] ?? String(t.status ?? "") },
+      vouchers: planned.map((p, i) => {
+        const v = vouchers[i] ?? {};
+        if (v.status === undefined) {
+          return {
+            voucherId: p.voucherId,
+            amount: p.amount,
+            type: p.type,
+            status: "unknown (read-back failed)",
+            paid: null,
+            paidAmount: null,
+          };
+        }
+        return {
+          voucherId: p.voucherId,
+          amount: p.amount,
+          type: p.type,
+          status: VOUCHER_STATUS[String(v.status)] ?? String(v.status),
+          paid: String(v.status) === "1000",
+          paidAmount: round2(num(v.paidAmount)),
+        };
+      }),
+    };
+  },
+};
+
+const resetVoucherToOpen: ToolDef = {
+  name: "sevdesk_reset_voucher_to_open",
+  title: "Remove all payments from a voucher",
+  description:
+    "Reset a paid or partly paid voucher to open (PUT /Voucher/{id}/resetToOpen). sevDesk " +
+    "removes EVERY payment and bank-transaction link on the voucher, including ones made in the " +
+    "sevDesk UI, and the transactions become open again. The undo for " +
+    "sevdesk_link_transaction. A transaction becomes open again only once every voucher on it " +
+    "is reset; until then it stays linked. Refuses enshrined vouchers, drafts, and foreign-currency " +
+    "vouchers (sevDesk would recalculate their EUR amounts at today's exchange rate).",
+  mutating: true,
+  booking: true,
+  destructive: true,
+  inputSchema: {
+    type: "object",
+    properties: {
+      voucherId: str("Numeric voucher id."),
+      dryRun: bool("Preview the request without sending it."),
+    },
+    required: ["voucherId"],
+    additionalProperties: false,
+  },
+  async handler(args, ctx) {
+    const voucherId = requireId(args, "voucherId");
+    const voucher = await fetchUnenshrined(ctx, "Voucher", voucherId);
+    const status = String(voucher.status ?? "");
+    if (status === "50") throw new Error(`Voucher ${voucherId} is a draft — nothing to reset.`);
+    if (status === "100") return { voucherId, status: "offen", changed: false };
+    const currency = voucherCurrency(voucher);
+    if (currency !== "EUR") {
+      throw new Error(
+        `Refused: voucher ${voucherId} is in ${currency}. Resetting it would recalculate its EUR ` +
+          "amounts at today's exchange rate. Remove its payments in the sevDesk UI.",
+      );
+    }
+
+    const before = {
+      status: VOUCHER_STATUS[status] ?? status,
+      paidAmount: round2(num(voucher.paidAmount)),
+    };
+    const path = `/Voucher/${encodeURIComponent(voucherId)}/resetToOpen`;
+    if (isDryRun(args, ctx)) return { dryRun: true, before, wouldSend: { method: "PUT", path } };
+
+    await ctx.client.request({ method: "PUT", path, mutating: true });
+    const v = await fetchVoucher(ctx, voucherId).catch(() => ({}) as Row);
+    return {
+      voucherId,
+      changed: true,
+      before,
+      status: VOUCHER_STATUS[String(v.status)] ?? String(v.status ?? ""),
+      paidAmount: round2(num(v.paidAmount)),
+    };
+  },
+};
+
 export const resourceTools: ToolDef[] = [
   ping,
   listVouchers,
@@ -1185,6 +1725,8 @@ export const resourceTools: ToolDef[] = [
   listTransactions,
   uploadVoucherFile,
   createVoucher,
+  linkTransaction,
+  resetVoucherToOpen,
   receiptGuidance,
   setTaxRule,
   createInvoice,

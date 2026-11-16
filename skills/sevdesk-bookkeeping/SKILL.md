@@ -48,6 +48,43 @@ Run in this order; each step's output feeds the next conversation turn:
    dryRun once confirmed.
 3. Foreign supplier without VAT? Do the §13b check below before booking.
 
+## Booking payments
+
+Needs `SEVDESK_ALLOW_BOOKING=true` (check `sevdesk_ping`). The voucher must
+be open (100), not a draft.
+
+1. `sevdesk_reconcile_transactions` or `sevdesk_list_transactions` to find
+   the matching open transaction.
+2. `sevdesk_link_transaction` with `dryRun: true`; show the user the
+   bookings, then repeat without dryRun once confirmed.
+3. One payment covering several receipts: pass all of them as
+   `allocations` in one call. A transaction that is already partly linked
+   is refused; finish it in the sevDesk UI.
+4. Wrong link? `sevdesk_reset_voucher_to_open` removes ALL payments from
+   the voucher, not just this one. Check the voucher first.
+5. Invoice or credit-note payment: there is no dedicated tool. Use
+   `sevdesk_call` with `bookInvoice` / `bookCreditNote` (describe it first,
+   `dryRun: true`, confirm with the user). Same flag; without it the call
+   is refused. If refused, tell the user booking is off rather than
+   looking for another way to book.
+
+## Ledger cleanup
+
+Run every step with `dryRun: true` first and show the preview.
+
+- Duplicate draft → `sevdesk_delete_voucher` (drafts only, cannot be undone;
+  needs `SEVDESK_ALLOW_BOOKING=true`).
+- Private payment on the business account → `sevdesk_set_transaction_private`
+  (same flag, it books a private withdrawal or deposit).
+- Wrong amounts or VAT on a draft → `sevdesk_update_draft_voucher` with the
+  full new `positions` list; `finalize: true` once it is right (needs the
+  booking flag; without it, tell the user to open the draft in sevDesk).
+- Receipt arrives as an attachment, not a file → `sevdesk_upload_voucher_file_content`
+  (PDF, PNG, JPG or XML e-invoice).
+- Voucher paid → see Booking payments above; read the `warnings` of
+  `sevdesk_link_transaction` before confirming. Paid with Skonto: `type: "CB"`
+  and the amount actually paid.
+
 ## §13b reverse-charge check (foreign supplier, 0 % VAT)
 
 1. Is the supplier established abroad? The contact's country is
