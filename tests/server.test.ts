@@ -235,6 +235,9 @@ describe("buildServer handlers", () => {
       ["voucherFactorySaveVoucher", {}, { voucher: { status: 100 } }],
       ["voucherFactorySaveVoucher", {}, { voucher: { status: 50, paidAmount: 5 } }],
       ["voucherFactorySaveVoucher", {}, { voucher: { payDate: "2026-01-01" } }],
+      // The same fields sent as query parameters instead of the body.
+      ["updateVoucher", { voucherId: 1, status: 1000 }, {}],
+      ["updateCheckAccountTransaction", { checkAccountTransactionId: 1, status: 300 }, {}],
     ];
 
     it("refuses them without the flag, dry runs included, and allows them with it", async () => {
@@ -253,6 +256,18 @@ describe("buildServer handlers", () => {
       expect(fetchCalls).toHaveLength(0);
       await off.close();
       await on.close();
+    });
+
+    it("refuses a non-object body on writes, so the rules cannot be sidestepped", async () => {
+      const s = await connect({ allowBooking: true });
+      const r = await s.call("sevdesk_call", {
+        operationId: "updateVoucher",
+        params: { voucherId: 1 },
+        body: JSON.stringify({ status: 1000 }),
+        dryRun: true,
+      });
+      expect(r.isError).toBe(true);
+      await s.close();
     });
 
     it("still allows ordinary updates without the flag", async () => {
