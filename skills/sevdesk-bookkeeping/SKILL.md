@@ -72,13 +72,18 @@ be open (100), not a draft.
 
 Run every step with `dryRun: true` first and show the preview.
 
-- Duplicate draft → `sevdesk_delete_voucher` (drafts only, cannot be undone).
-- Private payment on the business account → `sevdesk_set_transaction_private`.
+- Duplicate draft → `sevdesk_delete_voucher` (drafts only, cannot be undone;
+  needs `SEVDESK_ALLOW_BOOKING=true`).
+- Private payment on the business account → `sevdesk_set_transaction_private`
+  (same flag, it books a private withdrawal or deposit).
 - Wrong amounts or VAT on a draft → `sevdesk_update_draft_voucher` with the
-  full new `positions` list; `finalize: true` once it is right.
-- Receipt arrives as an attachment, not a file → `sevdesk_upload_voucher_file_content`.
-- Voucher paid → `sevdesk_book_voucher` with the matching transaction from
-  `sevdesk_reconcile_transactions`; read its warnings before confirming.
+  full new `positions` list; `finalize: true` once it is right (needs the
+  booking flag; without it, tell the user to open the draft in sevDesk).
+- Receipt arrives as an attachment, not a file → `sevdesk_upload_voucher_file_content`
+  (PDF, PNG, JPG or XML e-invoice).
+- Voucher paid → see Booking payments above; read the `warnings` of
+  `sevdesk_link_transaction` before confirming. Paid with Skonto: `type: "CB"`
+  and the amount actually paid.
 
 ## §13b reverse-charge check (foreign supplier, 0 % VAT)
 

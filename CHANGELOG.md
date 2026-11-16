@@ -21,33 +21,45 @@
   because the API does not report what is left on them.
 - `sevdesk_reset_voucher_to_open` removes all payments from a voucher. It is
   marked destructive. Both tools refuse foreign-currency vouchers.
-- `SEVDESK_ALLOW_BOOKING` (default `false`): the two booking tools are hidden
+- `SEVDESK_ALLOW_BOOKING` (default `false`): the booking tools are hidden
   and refused without it.
 - `sevdesk_create_voucher` takes `accountDatevId` per position, the booking
   account on sevdesk-Update 2.0.
 - Voucher status 750 is reported as `teilbezahlt`.
 - Ledger-cleanup tools, each with a status check before the write, a
   refusal for enshrined objects, `dryRun`, and a read-back afterwards:
-  `sevdesk_delete_voucher` (drafts without payments only; the only tool
-  with `destructiveHint`), `sevdesk_set_transaction_private` (open
-  transactions only), `sevdesk_upload_voucher_file_content` (base64 upload
-  for hosted clients, type checked by magic bytes, 10 MB cap, returns only
-  the filename token), `sevdesk_update_draft_voucher` (date, number,
-  supplier, tax rule, positions; `finalize` to open) and
-  `sevdesk_book_voucher` (`bookAmount` against one open transaction, with
-  direction and amount checks). Observed live and encoded: `DELETE
+  `sevdesk_delete_voucher` (drafts without payments only),
+  `sevdesk_set_transaction_private` (open transactions only),
+  `sevdesk_upload_voucher_file_content` (base64 upload for hosted clients,
+  PDF, PNG, JPG or XML e-invoice checked by content, 10 MB cap, returns only
+  the filename token) and `sevdesk_update_draft_voucher` (date, number,
+  supplier, tax rule, positions). Observed live and encoded: `DELETE
   /Voucher/{id}` works although the OpenAPI document omits it, and an
   open voucher needs `accountDatev` on every position (422 "Valid
-  accountDatev must be given" otherwise).
+  accountDatev must be given" otherwise). The delete and mark-private tools
+  are booking tools: hidden and refused without `SEVDESK_ALLOW_BOOKING`,
+  and `finalize` on `sevdesk_update_draft_voucher` is refused without it.
+  A new tax rule is checked against the voucher's side and its position
+  rates, and kept positions are re-sent as they were entered (net or gross).
+- `sevdesk_link_transaction` takes an optional `type` per voucher: `N`
+  (default), `CB` (Skonto), `MTC` (bank charges) or `O` (other reason). `CB`,
+  `MTC` and `O` need an amount below the open amount and settle the voucher.
+  It also returns `warnings` (dry run and result) when the bank text does
+  not mention the supplier, and a `verified` flag from the read-back.
 - `ToolDef.destructive` sets the MCP `destructiveHint` per tool instead of
   `false` for all.
 
 **Changed**
 
+- `sevdesk_link_transaction` books every payment as type `N`. Expense
+  payments were sent as `FULL_PAYMENT`, which sevDesk refuses for money out.
+  `N` settles the voucher when the amount is its open amount.
+- `sevdesk_reset_voucher_to_open`: a transaction becomes open again only once
+  every voucher on it is reset.
 - `sevdesk_create_voucher` returns a compact summary of the saved voucher
   instead of sevDesk's full echo.
 
-Thanks to @TheOriginal92 (#7).
+Thanks to @TheOriginal92 (#7) and @aluedeke (#3).
 
 ## 0.5.0 — 2026-10-19
 
