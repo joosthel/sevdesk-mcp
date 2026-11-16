@@ -179,6 +179,20 @@ const callOperation: ToolDef = {
       if (!pathParamNames.has(k)) query[k] = v;
     }
 
+    // sevDesk answers HTTP 400 to a `limit` that is not an integer from 1 to
+    // 1000 (tech.sevdesk.com, 2025-03-11 "API pagination limits"). Refuse it
+    // here with the same rule instead of spending a request on the error.
+    if (query.limit !== undefined && query.limit !== null) {
+      const raw = query.limit;
+      const n = typeof raw === "number" ? raw : /^\d+$/.test(String(raw)) ? Number(raw) : NaN;
+      if (!Number.isInteger(n) || n < 1 || n > 1000) {
+        throw new Error(
+          `Refused: limit must be an integer from 1 to 1000 (sevDesk rejects anything else with HTTP 400). ` +
+            "Page through larger collections with limit and offset.",
+        );
+      }
+    }
+
     // Some GETs change state, and the catalog calls every GET a read. Without
     // this, SEVDESK_READ_ONLY and dryRun would let them through:
     //  - *GetPdf marks the document as sent unless preventSendBy is true, so

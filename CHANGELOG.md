@@ -29,6 +29,14 @@
 
 **Changed**
 
+- The bundled OpenAPI spec is sevDesk's current one. `render`,
+  `changeParameter` and `sendByWithRender` now document the full PDF
+  (Base64 `pdf`) instead of `thumbs`/`pages` (sevDesk change of 2026-04-07),
+  and the PrivateTransactionRule operations are in the catalog.
+- `sevdesk_call` refuses a `limit` that is not an integer from 1 to 1000;
+  sevDesk answers such requests with HTTP 400 since 2025-05-30.
+- `exportDatevDepricated` (`/Export/datevCSV`) is flagged as removed by
+  sevDesk (2025-05-30); use `exportDatevCSV`.
 - `sevdesk_create_voucher` returns a compact summary of the saved voucher
   instead of sevDesk's full echo.
 
