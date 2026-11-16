@@ -37,7 +37,7 @@ import {
  * private payment, correct a draft, attach a receipt sent inline. Each one
  * checks the object's state first, refuses enshrined (festgeschrieben) objects,
  * accepts dryRun, and reads the object back afterwards to verify the change —
- * the alternative for these jobs is the unguarded sevdesk_call. Booking a
+ * the alternative for these jobs is the generic sevdesk_call. Booking a
  * voucher against a bank transaction is sevdesk_link_transaction.
  */
 

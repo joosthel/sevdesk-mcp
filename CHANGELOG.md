@@ -4,6 +4,16 @@
 
 **Breaking**
 
+- `sevdesk_create_voucher` refuses status 100 (open) and 1000 (paid),
+  `payDate` and `paidAmount` unless `SEVDESK_ALLOW_BOOKING=true`, dry runs
+  included. The default (status 50, draft) is unchanged. Create the voucher
+  as a draft, or set the flag.
+- `sevdesk_call` also refuses `voucherResetToDraft`, `invoiceResetToDraft`,
+  `creditNoteResetToDraft` and `createPrivateTransactionRule`, and the
+  generic writes that book: `updateCheckAccountTransaction` with a `status`,
+  `updateVoucher` with a `status` other than 50, `paidAmount` or `payDate`,
+  `voucherFactorySaveVoucher` with the same on `voucher`.
+  `sevdesk_describe_operation` says so.
 - `sevdesk_call` refuses the booking operations (`bookVoucher`,
   `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`,
   `invoiceResetToOpen`, `creditNoteResetToOpen`, and
@@ -44,7 +54,8 @@
   rates, and kept positions are re-sent as they were entered (net or gross).
 - `sevdesk_link_transaction` takes an optional `type` per voucher: `N`
   (default), `CB` (Skonto), `MTC` (bank charges) or `O` (other reason). `CB`,
-  `MTC` and `O` need an amount below the open amount and settle the voucher.
+  `MTC` and `O` need an amount below the open amount, at most 10 % below,
+  and settle the voucher.
   It also returns `warnings` (dry run and result) when the bank text does
   not mention the supplier, and a `verified` flag from the read-back.
 - `ToolDef.destructive` sets the MCP `destructiveHint` per tool instead of

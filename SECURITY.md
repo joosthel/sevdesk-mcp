@@ -30,12 +30,21 @@ guard lives in this server, not in the model's goodwill.
   enshrined vouchers and wrong-side rules and verifies its own result, and
   `SEVDESK_DRY_RUN=true` (or a per-call `dryRun`) previews any payload without
   sending it.
-- **Booking is a separate opt-in.** Unless `SEVDESK_ALLOW_BOOKING=true`, the
-  tools that book or remove payments (`sevdesk_link_transaction`,
-  `sevdesk_reset_voucher_to_open`) are hidden and refused by the dispatcher,
-  and `sevdesk_call` refuses the booking operations (`bookVoucher`,
-  `bookInvoice`, `bookCreditNote`, `voucherResetToOpen`, `invoiceResetToOpen`,
-  `creditNoteResetToOpen`) before any request, dry runs included.
+- **Booking is a separate opt-in.** Anything that books or removes payments,
+  marks a voucher paid, sets it from draft to open, deletes a voucher or marks
+  a transaction private needs `SEVDESK_ALLOW_BOOKING=true`. Without it:
+  `sevdesk_link_transaction`, `sevdesk_reset_voucher_to_open`,
+  `sevdesk_delete_voucher` and `sevdesk_set_transaction_private` are hidden and
+  refused by the dispatcher; `sevdesk_update_draft_voucher` refuses `finalize`;
+  `sevdesk_create_voucher` refuses status 100 and 1000, `payDate` and
+  `paidAmount`; and `sevdesk_call` refuses `bookVoucher`, `bookInvoice`,
+  `bookCreditNote`, `voucherResetToOpen`, `invoiceResetToOpen`,
+  `creditNoteResetToOpen`, `voucherResetToDraft`, `invoiceResetToDraft`,
+  `creditNoteResetToDraft` and `createPrivateTransactionRule`, plus
+  `updateCheckAccountTransaction` with a `status`, `updateVoucher` with a
+  `status` other than 50, `paidAmount` or `payDate`, and
+  `voucherFactorySaveVoucher` with the same on `voucher`. All of it is
+  refused before any request, dry runs included.
 - **No filesystem access unless you grant it.** The receipt file tools are
   disabled until `SEVDESK_RECEIPT_DIRS` names an explicit allowlist of absolute
   directories; paths outside it are refused. Containment is checked on real
